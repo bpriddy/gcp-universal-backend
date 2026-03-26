@@ -19,11 +19,13 @@ model User {
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz
 
-  permissions     UserAppPermission[]
-  refreshTokens   RefreshToken[]
-  grantedPerms    UserAppPermission[] @relation("GrantedByUser")
-  externalIds     UserExternalId[]
-  accountChanges  AccountChange[]     @relation("AccountChangedByUser")
+  permissions      UserAppPermission[]
+  refreshTokens    RefreshToken[]
+  grantedPerms     UserAppPermission[] @relation("GrantedByUser")
+  externalIds      UserExternalId[]
+  accountChanges   AccountChange[]     @relation("AccountChangedByUser")
+  campaignsCreated Campaign[]          @relation("CampaignCreatedByUser")
+  campaignChanges  CampaignChange[]    @relation("CampaignChangedByUser")
 
   @@map("users")
 }
@@ -35,9 +37,10 @@ model Account {
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
   updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz
 
-  parent   Account?  @relation("AccountHierarchy", fields: [parentId], references: [id])
-  children Account[] @relation("AccountHierarchy")
-  changes  AccountChange[]
+  parent     Account?   @relation("AccountHierarchy", fields: [parentId], references: [id])
+  children   Account[]  @relation("AccountHierarchy")
+  changes    AccountChange[]
+  campaigns  Campaign[]
 
   @@map("accounts")
 }
@@ -57,6 +60,46 @@ model AccountChange {
 
   @@index([accountId, property, changedAt(sort: Desc)])
   @@map("account_changes")
+}
+
+model Campaign {
+  id         String    @id @default(uuid()) @db.Uuid
+  accountId  String    @map("account_id") @db.Uuid
+  name       String
+  status     String    @default("pitch")
+  budget     Decimal?  @db.Decimal(15, 2)
+  assetsUrl  String?   @map("assets_url")
+  awardedAt  DateTime? @map("awarded_at") @db.Date
+  liveAt     DateTime? @map("live_at") @db.Date
+  endsAt     DateTime? @map("ends_at") @db.Date
+  createdBy  String    @map("created_by") @db.Uuid
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt  DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  account       Account          @relation(fields: [accountId], references: [id])
+  createdByUser User             @relation("CampaignCreatedByUser", fields: [createdBy], references: [id])
+  changes       CampaignChange[]
+
+  @@index([accountId])
+  @@index([status])
+  @@map("campaigns")
+}
+
+model CampaignChange {
+  id         String    @id @default(uuid()) @db.Uuid
+  campaignId String    @map("campaign_id") @db.Uuid
+  property   String
+  valueText  String?   @map("value_text")
+  valueUuid  String?   @map("value_uuid") @db.Uuid
+  valueDate  DateTime? @map("value_date") @db.Date
+  changedBy  String    @map("changed_by") @db.Uuid
+  changedAt  DateTime  @default(now()) @map("changed_at") @db.Timestamptz
+
+  campaign      Campaign @relation(fields: [campaignId], references: [id])
+  changedByUser User     @relation("CampaignChangedByUser", fields: [changedBy], references: [id])
+
+  @@index([campaignId, property, changedAt(sort: Desc)])
+  @@map("campaign_changes")
 }
 
 model UserExternalId {
