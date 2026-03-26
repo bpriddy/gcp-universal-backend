@@ -19,12 +19,44 @@ model User {
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz
 
-  permissions   UserAppPermission[]
-  refreshTokens RefreshToken[]
-  grantedPerms  UserAppPermission[] @relation("GrantedByUser")
-  externalIds   UserExternalId[]
+  permissions     UserAppPermission[]
+  refreshTokens   RefreshToken[]
+  grantedPerms    UserAppPermission[] @relation("GrantedByUser")
+  externalIds     UserExternalId[]
+  accountChanges  AccountChange[]     @relation("AccountChangedByUser")
 
   @@map("users")
+}
+
+model Account {
+  id        String    @id @default(uuid()) @db.Uuid
+  name      String
+  parentId  String?   @map("parent_id") @db.Uuid
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  parent   Account?  @relation("AccountHierarchy", fields: [parentId], references: [id])
+  children Account[] @relation("AccountHierarchy")
+  changes  AccountChange[]
+
+  @@map("accounts")
+}
+
+model AccountChange {
+  id        String    @id @default(uuid()) @db.Uuid
+  accountId String    @map("account_id") @db.Uuid
+  property  String
+  valueText String?   @map("value_text")
+  valueUuid String?   @map("value_uuid") @db.Uuid
+  valueDate DateTime? @map("value_date") @db.Date
+  changedBy String    @map("changed_by") @db.Uuid
+  changedAt DateTime  @default(now()) @map("changed_at") @db.Timestamptz
+
+  account     Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  changedByUser User  @relation("AccountChangedByUser", fields: [changedBy], references: [id])
+
+  @@index([accountId, property, changedAt(sort: Desc)])
+  @@map("account_changes")
 }
 
 model UserExternalId {
