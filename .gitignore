@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.env
+.env.local
+keys/*.pem
+keys/*.key
+*.pem
+coverage/
+.nyc_output/
+prisma/migrations/*/migration_lock.toml

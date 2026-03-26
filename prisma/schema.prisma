@@ -1,0 +1,60 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id          String   @id @default(uuid()) @db.Uuid
+  email       String   @unique
+  googleSub   String   @unique @map("google_sub")
+  displayName String?  @map("display_name")
+  avatarUrl   String?  @map("avatar_url")
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  permissions   UserAppPermission[]
+  refreshTokens RefreshToken[]
+  grantedPerms  UserAppPermission[] @relation("GrantedByUser")
+
+  @@map("users")
+}
+
+model UserAppPermission {
+  id           String   @id @default(uuid()) @db.Uuid
+  userId       String   @map("user_id") @db.Uuid
+  appId        String   @map("app_id")
+  dbIdentifier String   @map("db_identifier")
+  role         String   @default("viewer")
+  grantedAt    DateTime @default(now()) @map("granted_at") @db.Timestamptz
+  grantedById  String?  @map("granted_by") @db.Uuid
+
+  user      User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  grantedBy User? @relation("GrantedByUser", fields: [grantedById], references: [id])
+
+  @@unique([userId, appId])
+  @@map("user_app_permissions")
+}
+
+model RefreshToken {
+  id           String    @id @default(uuid()) @db.Uuid
+  userId       String    @map("user_id") @db.Uuid
+  tokenHash    String    @unique @map("token_hash")
+  family       String    @db.Uuid
+  issuedAt     DateTime  @default(now()) @map("issued_at") @db.Timestamptz
+  expiresAt    DateTime  @map("expires_at") @db.Timestamptz
+  revokedAt    DateTime? @map("revoked_at") @db.Timestamptz
+  replacedById String?   @map("replaced_by") @db.Uuid
+  ipAddress    String?   @map("ip_address")
+  userAgent    String?   @map("user_agent")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([family])
+  @@map("refresh_tokens")
+}
