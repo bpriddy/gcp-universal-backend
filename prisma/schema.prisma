@@ -26,6 +26,7 @@ model User {
   accountChanges   AccountChange[]     @relation("AccountChangedByUser")
   campaignsCreated Campaign[]          @relation("CampaignCreatedByUser")
   campaignChanges  CampaignChange[]    @relation("CampaignChangedByUser")
+  auditActions     AuditLog[]          @relation("AuditLogActor")
 
   @@map("users")
 }
@@ -100,6 +101,25 @@ model CampaignChange {
 
   @@index([campaignId, property, changedAt(sort: Desc)])
   @@map("campaign_changes")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  action     String
+  entityType String   @map("entity_type")
+  entityId   String   @map("entity_id") @db.Uuid
+  actorId    String   @map("actor_id") @db.Uuid
+  before     Json?
+  after      Json?
+  metadata   Json?
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  actor User @relation("AuditLogActor", fields: [actorId], references: [id])
+
+  @@index([entityType, entityId, createdAt(sort: Desc)])
+  @@index([actorId, createdAt(sort: Desc)])
+  @@index([action, createdAt(sort: Desc)])
+  @@map("audit_log")
 }
 
 model UserExternalId {
