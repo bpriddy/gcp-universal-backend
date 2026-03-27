@@ -1,0 +1,134 @@
+###############################################################################
+# Cloud Build — production environment
+# Trigger: push to `main` branch
+#
+# Production differences from staging:
+#   - Higher min/max instances
+#   - --no-traffic flag on deploy — new revision receives 0% traffic
+#     until manually promoted via:
+#       gcloud run services update-traffic gcp-universal-backend-prod \
+#         --to-latest --region=us-central1
+#     This gives a window to verify the new revision before cutover.
+#   - Larger machine type for the build
+###############################################################################
+
+substitutions:
+  _REGION: us-central1
+  _AR_REPO: gcp-universal-backend
+  _SERVICE: gcp-universal-backend-prod
+  _DB_SECRET: prod-database-url
+  _APP_DB_SECRET: prod-app-db-connections
+  _GOOGLE_CLIENT_ID_SECRET: prod-google-client-id
+  _JWT_PRIV_SECRET: prod-jwt-private-key-b64
+  _JWT_PUB_SECRET: prod-jwt-public-key-b64
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+
+steps:
+  # ── 1. Type check ─────────────────────────────────────────────────────────
+  - id: typecheck
+    name: node:20-alpine
+    entrypoint: sh
+    args:
+      - -c
+      - npm ci && npx tsc --noEmit
+
+  # ── 2. Build Docker image ─────────────────────────────────────────────────
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - $_REGION-docker.pkg.dev/$PROJECT_ID/$_AR_REPO/$_SERVICE:$SHORT_SHA
+      - -t
+      - $_REGION-docker.pkg.dev/$PROJECT_ID/$_AR_REPO/$_SERVICE:latest
+      - .
+    waitFor: [typecheck]
+
+  # ── 3. Push image ─────────────────────────────────────────────────────────
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - --all-tags
+      - $_REGION-docker.pkg.dev/$PROJECT_ID/$_AR_REPO/$_SERVICE
+    waitFor: [build]
+
+  # ── 4. Deploy migration job with new image ────────────────────────────────
+  - id: deploy-migration-job
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - jobs
+      - deploy
+      - $_SERVICE-migrate
+      - --image=$_REGION-docker.pkg.dev/$PROJECT_ID/$_AR_REPO/$_SERVICE:$SHORT_SHA
+      - --region=$_REGION
+      - --command=npx
+      - --args=prisma,migrate,deploy
+      - --set-secrets=DATABASE_URL=$_DB_SECRET:latest
+      - --service-account=sa-$_SERVICE@$PROJECT_ID.iam.gserviceaccount.com
+    waitFor: [push]
+
+  # ── 5. Run migrations ─────────────────────────────────────────────────────
+  - id: migrate
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - jobs
+      - execute
+      - $_SERVICE-migrate
+      - --region=$_REGION
+      - --wait
+    waitFor: [deploy-migration-job]
+
+  # ── 6. Deploy to Cloud Run (no traffic — manual promotion required) ────────
+  - id: deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - $_SERVICE
+      - --image=$_REGION-docker.pkg.dev/$PROJECT_ID/$_AR_REPO/$_SERVICE:$SHORT_SHA
+      - --region=$_REGION
+      - --platform=managed
+      - --allow-unauthenticated
+      - --min-instances=1
+      - --max-instances=10
+      - --memory=1Gi
+      - --cpu=2
+      - --port=3000
+      - --no-traffic
+      - --service-account=sa-$_SERVICE@$PROJECT_ID.iam.gserviceaccount.com
+      - --set-env-vars=NODE_ENV=production,GCP_PROJECT_ID=$PROJECT_ID
+      - --set-secrets=DATABASE_URL=$_DB_SECRET:latest
+      - --set-secrets=APP_DB_CONNECTIONS=$_APP_DB_SECRET:latest
+      - --set-secrets=GOOGLE_CLIENT_ID=$_GOOGLE_CLIENT_ID_SECRET:latest
+      - --set-secrets=JWT_PRIVATE_KEY_B64=$_JWT_PRIV_SECRET:latest
+      - --set-secrets=JWT_PUBLIC_KEY_B64=$_JWT_PUB_SECRET:latest
+    waitFor: [migrate]
+
+  # ── 7. Print promotion instructions ──────────────────────────────────────
+  - id: instructions
+    name: gcr.io/cloud-builders/docker
+    entrypoint: sh
+    args:
+      - -c
+      - |
+        echo ""
+        echo "========================================================="
+        echo "  Production deploy complete — revision is at 0% traffic."
+        echo ""
+        echo "  Verify the new revision, then promote with:"
+        echo ""
+        echo "  gcloud run services update-traffic $_SERVICE \\"
+        echo "    --to-latest \\"
+        echo "    --region=$_REGION"
+        echo "========================================================="
+        echo ""
+    waitFor: [deploy]

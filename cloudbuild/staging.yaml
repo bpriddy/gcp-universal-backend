@@ -1,0 +1,106 @@
+###############################################################################
+# Cloud Build — staging environment
+# Trigger: push to `staging` branch
+#
+# Same substitution variables as dev.yaml — set in Cloud Build trigger config.
+###############################################################################
+
+substitutions:
+  _REGION: us-central1
+  _AR_REPO: gcp-universal-backend
+  _SERVICE: gcp-universal-backend-staging
+  _DB_SECRET: staging-database-url
+  _APP_DB_SECRET: staging-app-db-connections
+  _GOOGLE_CLIENT_ID_SECRET: staging-google-client-id
+  _JWT_PRIV_SECRET: staging-jwt-private-key-b64
+  _JWT_PUB_SECRET: staging-jwt-public-key-b64
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_MEDIUM
+
+steps:
+  # ── 1. Type check ─────────────────────────────────────────────────────────
+  - id: typecheck
+    name: node:20-alpine
+    entrypoint: sh
+    args:
+      - -c
+      - npm ci && npx tsc --noEmit
+
+  # ── 2. Build Docker image ─────────────────────────────────────────────────
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - $_REGION-docker.pkg.dev/$PROJECT_ID/$_AR_REPO/$_SERVICE:$SHORT_SHA
+      - -t
+      - $_REGION-docker.pkg.dev/$PROJECT_ID/$_AR_REPO/$_SERVICE:latest
+      - .
+    waitFor: [typecheck]
+
+  # ── 3. Push image ─────────────────────────────────────────────────────────
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - --all-tags
+      - $_REGION-docker.pkg.dev/$PROJECT_ID/$_AR_REPO/$_SERVICE
+    waitFor: [build]
+
+  # ── 4. Deploy migration job with new image ────────────────────────────────
+  - id: deploy-migration-job
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - jobs
+      - deploy
+      - $_SERVICE-migrate
+      - --image=$_REGION-docker.pkg.dev/$PROJECT_ID/$_AR_REPO/$_SERVICE:$SHORT_SHA
+      - --region=$_REGION
+      - --command=npx
+      - --args=prisma,migrate,deploy
+      - --set-secrets=DATABASE_URL=$_DB_SECRET:latest
+      - --service-account=sa-$_SERVICE@$PROJECT_ID.iam.gserviceaccount.com
+    waitFor: [push]
+
+  # ── 5. Run migrations ─────────────────────────────────────────────────────
+  - id: migrate
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - jobs
+      - execute
+      - $_SERVICE-migrate
+      - --region=$_REGION
+      - --wait
+    waitFor: [deploy-migration-job]
+
+  # ── 6. Deploy to Cloud Run ────────────────────────────────────────────────
+  - id: deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - $_SERVICE
+      - --image=$_REGION-docker.pkg.dev/$PROJECT_ID/$_AR_REPO/$_SERVICE:$SHORT_SHA
+      - --region=$_REGION
+      - --platform=managed
+      - --allow-unauthenticated
+      - --min-instances=0
+      - --max-instances=4
+      - --memory=512Mi
+      - --cpu=1
+      - --port=3000
+      - --service-account=sa-$_SERVICE@$PROJECT_ID.iam.gserviceaccount.com
+      - --set-env-vars=NODE_ENV=production,GCP_PROJECT_ID=$PROJECT_ID
+      - --set-secrets=DATABASE_URL=$_DB_SECRET:latest
+      - --set-secrets=APP_DB_CONNECTIONS=$_APP_DB_SECRET:latest
+      - --set-secrets=GOOGLE_CLIENT_ID=$_GOOGLE_CLIENT_ID_SECRET:latest
+      - --set-secrets=JWT_PRIVATE_KEY_B64=$_JWT_PRIV_SECRET:latest
+      - --set-secrets=JWT_PUBLIC_KEY_B64=$_JWT_PUB_SECRET:latest
+    waitFor: [migrate]
