@@ -3,6 +3,20 @@
   "version": "1.0.0",
   "description": "Universal GCP backend auth gateway — Google OAuth to JWT with multi-database routing",
   "main": "dist/server.js",
+  "exports": {
+    ".": "./dist/server.js",
+    "./frontend": "./sdk/frontend/index.tsx",
+    "./backend": "./sdk/backend/index.ts"
+  },
+  "peerDependencies": {
+    "@react-oauth/google": ">=0.12.0",
+    "jose": ">=5.0.0",
+    "react": ">=18.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@react-oauth/google": { "optional": true },
+    "react": { "optional": true }
+  },
   "scripts": {
     "build": "tsc",
     "start": "node dist/server.js",
