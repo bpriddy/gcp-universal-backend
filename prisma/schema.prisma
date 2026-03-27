@@ -7,6 +7,11 @@ generator client {
   provider = "prisma-client-js"
 }
 
+// ── Auth identity layer ────────────────────────────────────────────────────
+// Anyone who authenticates with the platform via Google OAuth.
+// May be a client, vendor, partner, external collaborator, or staff member.
+// Does NOT represent org relationships — that is the Staff table.
+
 model User {
   id          String   @id @default(uuid()) @db.Uuid
   email       String   @unique
@@ -19,33 +24,85 @@ model User {
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz
 
-  permissions      UserAppPermission[]
-  refreshTokens    RefreshToken[]
-  grantedPerms     UserAppPermission[] @relation("GrantedByUser")
-  externalIds      UserExternalId[]
-  accountChanges   AccountChange[]     @relation("AccountChangedByUser")
-  campaignsCreated Campaign[]          @relation("CampaignCreatedByUser")
-  campaignChanges  CampaignChange[]    @relation("CampaignChangedByUser")
-  auditActions     AuditLog[]          @relation("AuditLogActor")
+  permissions   UserAppPermission[]
+  refreshTokens RefreshToken[]
+  grantedPerms  UserAppPermission[] @relation("GrantedByUser")
+  externalIds   UserExternalId[]
+  staffProfile  Staff?
 
   @@map("users")
 }
 
-model Account {
-  id        String    @id @default(uuid()) @db.Uuid
-  name      String
-  parentId  String?   @map("parent_id") @db.Uuid
-  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+// ── Org identity layer ─────────────────────────────────────────────────────
+// Employees — current and former — of the agency.
+// This is the source of truth for people in all org relationships:
+//   campaigns.created_by, account_changes.changed_by, audit_log.actor_id
+//   and any value_uuid in account_changes / campaign_changes that
+//   references a person (convention: property name ends in _staff_id).
+//
+// user_id is nullable — not all staff have platform access.
+// A staff record must never be hard-deleted; use status = 'former'.
 
-  parent     Account?   @relation("AccountHierarchy", fields: [parentId], references: [id])
-  children   Account[]  @relation("AccountHierarchy")
-  changes    AccountChange[]
-  campaigns  Campaign[]
+model Staff {
+  id         String    @id @default(uuid()) @db.Uuid
+  userId     String?   @unique @map("user_id") @db.Uuid
+  fullName   String    @map("full_name")
+  email      String    @unique
+  title      String?
+  department String?
+  status     String    @default("active")
+  startedAt  DateTime  @map("started_at") @db.Date
+  endedAt    DateTime? @map("ended_at") @db.Date
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt  DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  user             User?           @relation(fields: [userId], references: [id], onDelete: SetNull)
+  externalIds      StaffExternalId[]
+  accountChanges   AccountChange[]  @relation("AccountChangedByStaff")
+  campaignsCreated Campaign[]       @relation("CampaignCreatedByStaff")
+  campaignChanges  CampaignChange[] @relation("CampaignChangedByStaff")
+  auditActions     AuditLog[]       @relation("AuditLogActorStaff")
+
+  @@index([userId])
+  @@index([status])
+  @@map("staff")
+}
+
+model StaffExternalId {
+  id         String   @id @default(uuid()) @db.Uuid
+  staffId    String   @map("staff_id") @db.Uuid
+  system     String
+  externalId String   @map("external_id")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  staff Staff @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  @@unique([system, externalId])
+  @@index([staffId])
+  @@map("staff_external_ids")
+}
+
+// ── Accounts ───────────────────────────────────────────────────────────────
+
+model Account {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String
+  parentId  String?  @map("parent_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  parent    Account?        @relation("AccountHierarchy", fields: [parentId], references: [id])
+  children  Account[]       @relation("AccountHierarchy")
+  changes   AccountChange[]
+  campaigns Campaign[]
 
   @@map("accounts")
 }
 
+// Append-only log of account property changes.
+// Current state = latest changedAt per property.
+// When value_uuid references a staff member, the property name
+// should end in _staff_id (e.g. account_exec_staff_id).
 model AccountChange {
   id        String    @id @default(uuid()) @db.Uuid
   accountId String    @map("account_id") @db.Uuid
@@ -56,36 +113,40 @@ model AccountChange {
   changedBy String    @map("changed_by") @db.Uuid
   changedAt DateTime  @default(now()) @map("changed_at") @db.Timestamptz
 
-  account     Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  changedByUser User  @relation("AccountChangedByUser", fields: [changedBy], references: [id])
+  account         Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  changedByStaff  Staff   @relation("AccountChangedByStaff", fields: [changedBy], references: [id])
 
   @@index([accountId, property, changedAt(sort: Desc)])
   @@map("account_changes")
 }
 
-model Campaign {
-  id         String    @id @default(uuid()) @db.Uuid
-  accountId  String    @map("account_id") @db.Uuid
-  name       String
-  status     String    @default("pitch")
-  budget     Decimal?  @db.Decimal(15, 2)
-  assetsUrl  String?   @map("assets_url")
-  awardedAt  DateTime? @map("awarded_at") @db.Date
-  liveAt     DateTime? @map("live_at") @db.Date
-  endsAt     DateTime? @map("ends_at") @db.Date
-  createdBy  String    @map("created_by") @db.Uuid
-  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt  DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+// ── Campaigns ──────────────────────────────────────────────────────────────
 
-  account       Account          @relation(fields: [accountId], references: [id])
-  createdByUser User             @relation("CampaignCreatedByUser", fields: [createdBy], references: [id])
-  changes       CampaignChange[]
+model Campaign {
+  id        String    @id @default(uuid()) @db.Uuid
+  accountId String    @map("account_id") @db.Uuid
+  name      String
+  status    String    @default("pitch")
+  budget    Decimal?  @db.Decimal(15, 2)
+  assetsUrl String?   @map("assets_url")
+  awardedAt DateTime? @map("awarded_at") @db.Date
+  liveAt    DateTime? @map("live_at") @db.Date
+  endsAt    DateTime? @map("ends_at") @db.Date
+  createdBy String    @map("created_by") @db.Uuid
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  account          Account          @relation(fields: [accountId], references: [id])
+  createdByStaff   Staff            @relation("CampaignCreatedByStaff", fields: [createdBy], references: [id])
+  changes          CampaignChange[]
 
   @@index([accountId])
   @@index([status])
   @@map("campaigns")
 }
 
+// Append-only log of campaign property changes.
+// Same conventions as AccountChange.
 model CampaignChange {
   id         String    @id @default(uuid()) @db.Uuid
   campaignId String    @map("campaign_id") @db.Uuid
@@ -96,12 +157,17 @@ model CampaignChange {
   changedBy  String    @map("changed_by") @db.Uuid
   changedAt  DateTime  @default(now()) @map("changed_at") @db.Timestamptz
 
-  campaign      Campaign @relation(fields: [campaignId], references: [id])
-  changedByUser User     @relation("CampaignChangedByUser", fields: [changedBy], references: [id])
+  campaign       Campaign @relation(fields: [campaignId], references: [id])
+  changedByStaff Staff    @relation("CampaignChangedByStaff", fields: [changedBy], references: [id])
 
   @@index([campaignId, property, changedAt(sort: Desc)])
   @@map("campaign_changes")
 }
+
+// ── Audit log ──────────────────────────────────────────────────────────────
+// Append-only. Immutable at the DB level via trigger.
+// actor_id references staff — platform actions are always attributed
+// to an org identity, not a raw auth credential.
 
 model AuditLog {
   id         String   @id @default(uuid()) @db.Uuid
@@ -114,13 +180,15 @@ model AuditLog {
   metadata   Json?
   createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
 
-  actor User @relation("AuditLogActor", fields: [actorId], references: [id])
+  actor Staff @relation("AuditLogActorStaff", fields: [actorId], references: [id])
 
   @@index([entityType, entityId, createdAt(sort: Desc)])
   @@index([actorId, createdAt(sort: Desc)])
   @@index([action, createdAt(sort: Desc)])
   @@map("audit_log")
 }
+
+// ── Auth support tables ────────────────────────────────────────────────────
 
 model UserExternalId {
   id         String   @id @default(uuid()) @db.Uuid
