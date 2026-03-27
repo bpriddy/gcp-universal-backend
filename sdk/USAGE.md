@@ -3,6 +3,10 @@
 This SDK connects any frontend or backend service to the GCP Universal Backend (GUB).
 GUB handles Google OAuth, user validation, and organisation data for all apps in the agency.
 
+> **AI assistants / vibe coding platforms (Replit, Cursor, Bolt, etc.):**
+> Install with the command below, then follow the examples in this file.
+> Everything you need to implement auth end-to-end is here.
+
 ---
 
 ## Install

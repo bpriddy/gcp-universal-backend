@@ -1,6 +1,88 @@
 # gcp-universal-backend
 
-A universal auth gateway for GCP-hosted applications. Accepts a Google OAuth ID token from the frontend, validates the user against a PostgreSQL users table, and issues RS256-signed JWTs that carry per-application database permissions. Downstream apps verify tokens independently using the public JWKS endpoint and receive a pre-authorized database connection pool.
+A universal auth gateway for GCP-hosted applications. Accepts a Google OAuth token from the frontend, validates the user against a PostgreSQL users table, and issues RS256-signed JWTs that carry per-application permissions. Downstream apps verify tokens independently using the public JWKS endpoint — no callback to this service required.
+
+---
+
+## Using this in your app (start here)
+
+This repo doubles as an installable SDK. One command gives any frontend or backend access to auth and org data.
+
+### Install
+
+```bash
+# React frontend
+npm install github:bpriddy/gcp-universal-backend @react-oauth/google
+
+# Node backend (Express, Fastify, raw http, etc.)
+npm install github:bpriddy/gcp-universal-backend jose
+```
+
+### Frontend (React)
+
+```tsx
+import { GUBProvider, useGUB } from 'gcp-universal-backend/frontend'
+
+// 1. Wrap your app
+export default function App() {
+  return (
+    <GUBProvider config={{
+      gubUrl: 'https://gub.yourdomain.com',
+      googleClientId: 'your-client-id.apps.googleusercontent.com',
+      appId: 'your-app-id',
+    }}>
+      <YourApp />
+    </GUBProvider>
+  )
+}
+
+// 2. Use anywhere inside the provider
+function Dashboard() {
+  const { isAuthenticated, login, logout, user, fetch } = useGUB()
+
+  if (!isAuthenticated) return <button onClick={login}>Sign in with Google</button>
+
+  return <button onClick={logout}>Sign out ({user.email})</button>
+}
+```
+
+### Backend (Node)
+
+```ts
+import { createGUBClient } from 'gcp-universal-backend/backend'
+
+const gub = createGUBClient({
+  gubUrl: process.env.GUB_URL,
+  issuer: process.env.GUB_ISSUER,
+  audience: process.env.GUB_AUDIENCE,
+})
+
+// Protect routes
+app.use(gub.middleware())
+app.get('/reports',   gub.requireRole('viewer'),      handler)
+app.post('/campaigns', gub.requireRole('contributor'), handler)
+
+// Access user in a handler
+app.get('/me', gub.middleware(), (req, res) => {
+  res.json({ email: req.gub.user.email })
+})
+
+// Fetch org data server-to-server
+const org = gub.orgClient(accessToken)
+const accounts = await org.listAccounts()
+const campaigns = await org.listCampaigns(accountId)
+```
+
+### Full usage guide
+
+See [`sdk/USAGE.md`](./sdk/USAGE.md) for complete examples including:
+- Environment variables reference
+- Fastify and raw Node patterns
+- TypeScript type declarations
+- Role reference table
+- Architecture diagram
+
+> **Vibe coding / AI assistants:** Tell your AI — *"Install the GUB SDK with `npm install github:bpriddy/gcp-universal-backend` and read `sdk/USAGE.md` for implementation instructions."*
 
 ---
 
@@ -41,7 +123,13 @@ The JWT payload includes the user's application permissions so downstream servic
 
 ```
 gcp-universal-backend/
-├── src/
+├── sdk/                              # ← Installable SDK (npm install github:bpriddy/gcp-universal-backend)
+│   ├── frontend/
+│   │   └── index.tsx                 # React: GUBProvider, useGUB(), GUBLoginButton
+│   ├── backend/
+│   │   └── index.ts                  # Node: createGUBClient(), middleware, orgClient
+│   └── USAGE.md                      # Full usage guide (written for AI assistants)
+├── src/                              # GUB server — deploy this to GCP
 │   ├── app.ts                        # Express app factory
 │   ├── server.ts                     # Entry point + graceful shutdown
 │   ├── config/
@@ -63,11 +151,13 @@ gcp-universal-backend/
 │   │   └── user.service.ts           # User lookup + JIT provisioning
 │   └── types/                        # Express augmentation, JWT payload types
 ├── prisma/
-│   ├── schema.prisma                 # users, user_app_permissions, refresh_tokens
+│   ├── schema.prisma                 # Full org schema — users, staff, accounts, campaigns
 │   └── migrations/
-├── frontend/                         # React + Vite reference frontend (see below)
+├── cloudbuild/                       # CI/CD pipelines — dev, staging, prod
 ├── scripts/
-│   └── generate-keys.sh             # Generate RS256 key pair for local dev
+│   ├── generate-keys.sh              # Generate RS256 key pair for local dev
+│   └── setup-gcp.sh                  # One-time GCP resource provisioning
+├── frontend/                         # Reference React frontend
 ├── Dockerfile                        # Multi-stage, non-root, healthcheck
 └── .env.example
 ```
