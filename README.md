@@ -205,12 +205,26 @@ Application databases (defined in `APP_DB_CONNECTIONS`) are separate PostgreSQL 
 | `POST` | `/auth/logout-all` | Bearer | Revoke all sessions (all devices) |
 | `GET` | `/auth/jwks` | — | RS256 public key in JWKS format |
 
+### Org data
+
+All org routes require a valid Bearer JWT.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/org/accounts` | List all accounts with resolved current state |
+| `GET` | `/org/accounts/:id` | Fetch a single account |
+| `GET` | `/org/accounts/:id/campaigns` | List campaigns for an account |
+| `GET` | `/org/campaigns/:id` | Fetch a single campaign |
+| `GET` | `/org/staff` | List active staff (`?all=true` includes former) |
+| `GET` | `/org/staff/:id` | Fetch a single staff member |
+
 ### Health
 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/health` | Readiness probe — checks DB connectivity |
 | `GET` | `/health/live` | Liveness probe — no dependencies |
+| `GET` | `/.well-known/jwks.json` | RS256 public key — standard JWKS discovery URL |
 
 ### Protected routes (example pattern)
 

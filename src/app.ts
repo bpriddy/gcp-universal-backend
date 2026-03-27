@@ -10,6 +10,8 @@ import { authLimiter } from './middleware/rateLimiter';
 import { logger } from './services/logger';
 import authRouter from './modules/auth/auth.router';
 import healthRouter from './modules/health/health.router';
+import orgRouter from './modules/org/org.router';
+import { getJwks as getJwksHandler } from './modules/auth/auth.controller';
 
 export function createApp(): express.Application {
   const app = express();
@@ -59,6 +61,10 @@ export function createApp(): express.Application {
   // ── Routes ────────────────────────────────────────────────────────────────
   app.use('/health', healthRouter);
   app.use('/auth', authLimiter, authRouter);
+  app.use('/org', orgRouter);
+
+  // Standard JWKS discovery endpoint — consumed by downstream backend SDKs
+  app.get('/.well-known/jwks.json', getJwksHandler);
 
   // ── 404 handler ───────────────────────────────────────────────────────────
   app.use((_req, res) => {
