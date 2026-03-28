@@ -5,10 +5,10 @@
  * Works with Express, Fastify, raw http, or any Node framework.
  *
  * Install:
- *   npm install github:bpriddy/gcp-universal-backend jose
+ *   npm install github:bpriddy/gcp-universal-backend
  *
  * Usage:
- *   import { createGUBClient } from 'gcp-universal-backend/backend'
+ *   import { createGUBClient } from 'gcp-universal-backend/sdk/backend'
  */
 
 import { createRemoteJWKSet, jwtVerify } from 'jose';
@@ -26,6 +26,8 @@ export interface GUBTokenPayload {
   sub: string;
   email: string;
   displayName: string | null;
+  /** Superuser flag — bypasses all access_grants checks on GUB */
+  isAdmin: boolean;
   permissions: TokenPermission[];
   iss: string;
   aud: string | string[];
@@ -39,34 +41,42 @@ export interface GUBClientConfig {
   gubUrl: string;
   /** Must match JWT_ISSUER env var on the GUB server */
   issuer: string;
-  /** Must match JWT_AUDIENCE env var on the GUB server — usually your appId */
+  /** Must match JWT_AUDIENCE env var on the GUB server */
   audience: string;
 }
 
-// Express-compatible request/response/next types without requiring @types/express
-export interface Request {
+// Minimal framework-agnostic request/response types
+// Compatible with Express, Fastify, and raw http.IncomingMessage
+export interface GUBRequest {
   headers: Record<string, string | string[] | undefined>;
   [key: string]: unknown;
 }
-export interface Response {
-  status: (code: number) => Response;
+export interface GUBResponse {
+  status: (code: number) => GUBResponse;
   json: (body: unknown) => void;
 }
-export type NextFunction = (err?: unknown) => void;
+export type GUBNextFunction = (err?: unknown) => void;
 
-// Attached to req.gub after successful verification
+/** Attached to req.gub after successful JWT verification */
 export interface GUBRequestContext {
   user: GUBTokenPayload;
-  /** Convenience: permission for the app this backend serves */
+  /** Permission entry for the app this backend serves, if present */
   appPermission: TokenPermission | undefined;
 }
 
 // ── Org data types ─────────────────────────────────────────────────────────
+// Mirror of the shapes returned by GUB's /org/* endpoints.
+
+export interface GUBAccountCurrentState {
+  [property: string]: string | null;
+}
 
 export interface GUBAccount {
   id: string;
   name: string;
   parentId: string | null;
+  /** Resolved current state from account_changes EAV log */
+  currentState: GUBAccountCurrentState;
   createdAt: string;
   updatedAt: string;
 }
@@ -76,7 +86,8 @@ export interface GUBCampaign {
   accountId: string;
   name: string;
   status: string;
-  budget: number | null;
+  /** Serialized as string to preserve decimal precision — parse with a decimal library */
+  budget: string | null;
   assetsUrl: string | null;
   awardedAt: string | null;
   liveAt: string | null;
@@ -96,42 +107,53 @@ export interface GUBStaff {
   endedAt: string | null;
 }
 
+// ── Role ranking ───────────────────────────────────────────────────────────
+
+const ROLE_RANK: Record<string, number> = {
+  viewer: 0,
+  contributor: 1,
+  manager: 2,
+  admin: 3,
+};
+
+type Role = 'viewer' | 'contributor' | 'manager' | 'admin';
+
 // ── GUB Client factory ─────────────────────────────────────────────────────
 
 /**
  * Create a GUB client for your backend service.
+ * Call once at startup and import the result wherever needed.
  *
  * @example
- * const gub = createGUBClient({
- *   gubUrl: process.env.GUB_URL,
- *   issuer: process.env.GUB_ISSUER,
- *   audience: process.env.APP_ID,
- * })
+ * // gub.ts
+ * import { createGUBClient } from 'gcp-universal-backend/sdk/backend'
  *
- * // Express
- * app.use(gub.middleware())
- * app.get('/data', gub.requireRole('viewer'), (req, res) => {
- *   const { user } = req.gub
- *   res.json({ hello: user.email })
+ * export const gub = createGUBClient({
+ *   gubUrl:   process.env.GUB_URL!,
+ *   issuer:   process.env.GUB_ISSUER!,
+ *   audience: process.env.GUB_AUDIENCE!,
  * })
  */
 export function createGUBClient(config: GUBClientConfig) {
   const { gubUrl, issuer, audience } = config;
+  const baseUrl = gubUrl.replace(/\/$/, '');
 
-  // JWKS fetched from GUB and cached — auto-refreshes when key rotates
+  // JWKS fetched from GUB's standard discovery endpoint and cached locally.
+  // Auto-refreshes when the key rotates — no manual intervention needed.
   const JWKS = createRemoteJWKSet(
-    new URL(`${gubUrl}/.well-known/jwks.json`),
+    new URL(`${baseUrl}/.well-known/jwks.json`),
     { cacheMaxAge: 10 * 60 * 1000 }, // 10 minutes
   );
 
   // ── Token verification ───────────────────────────────────────────────────
 
   /**
-   * Verify a JWT and return its payload.
-   * Use this when you need programmatic access outside middleware.
+   * Verify a JWT and return its typed payload.
+   * Use this for programmatic access when middleware is not appropriate.
    *
    * @example
-   * const payload = await gub.verifyToken(req.headers.authorization?.split(' ')[1])
+   * const payload = await gub.verifyToken(token)
+   * console.log(payload.email, payload.isAdmin)
    */
   async function verifyToken(token: string): Promise<GUBTokenPayload> {
     const { payload } = await jwtVerify(token, JWKS, {
@@ -145,18 +167,22 @@ export function createGUBClient(config: GUBClientConfig) {
   // ── Middleware ───────────────────────────────────────────────────────────
 
   /**
-   * Express/Connect middleware that verifies the Bearer token and
-   * attaches req.gub = { user, appPermission }.
+   * Express/Connect middleware that verifies the Bearer JWT and attaches
+   * req.gub = { user, appPermission } for use in route handlers.
    *
    * @example
+   * // Protect all routes
    * app.use(gub.middleware())
+   *
+   * // Protect a single route and scope to a specific app
+   * app.get('/data', gub.middleware('my-app-id'), handler)
    */
   function middleware(appId?: string) {
     return async function gubMiddleware(
-      req: Request,
-      res: Response,
-      next: NextFunction,
-    ) {
+      req: GUBRequest,
+      res: GUBResponse,
+      next: GUBNextFunction,
+    ): Promise<void> {
       const authHeader = req.headers['authorization'];
       const token =
         typeof authHeader === 'string' && authHeader.startsWith('Bearer ')
@@ -164,7 +190,7 @@ export function createGUBClient(config: GUBClientConfig) {
           : null;
 
       if (!token) {
-        res.status(401).json({ error: 'Missing authorization token' });
+        res.status(401).json({ code: 'MISSING_TOKEN', error: 'Authorization: Bearer <token> required' });
         return;
       }
 
@@ -172,55 +198,53 @@ export function createGUBClient(config: GUBClientConfig) {
         const user = await verifyToken(token);
         const resolvedAppId = appId ?? audience;
 
-        (req as Request & { gub: GUBRequestContext }).gub = {
+        (req as GUBRequest & { gub: GUBRequestContext }).gub = {
           user,
-          appPermission: user.permissions.find(
-            (p) => p.appId === resolvedAppId,
-          ),
+          appPermission: user.permissions.find((p) => p.appId === resolvedAppId),
         };
 
         next();
       } catch (err) {
-        const message =
-          err instanceof Error ? err.message : 'Invalid token';
-        res.status(401).json({ error: message });
+        const message = err instanceof Error ? err.message : 'Invalid token';
+        res.status(401).json({ code: 'INVALID_TOKEN', error: message });
       }
     };
   }
 
+  // ── Role gate ────────────────────────────────────────────────────────────
+
   /**
-   * Require a minimum role on the app permission.
-   * Must be used after gub.middleware().
+   * Require a minimum role. Must be used after gub.middleware().
+   * isAdmin users bypass all role checks.
    *
-   * Roles in order: viewer < contributor < manager < admin
+   * Role order: viewer < contributor < manager < admin
    *
    * @example
-   * app.get('/reports', gub.requireRole('viewer'), handler)
+   * app.get('/reports',    gub.requireRole('viewer'),      handler)
    * app.post('/campaigns', gub.requireRole('contributor'), handler)
-   * app.delete('/accounts', gub.requireRole('admin'), handler)
+   * app.delete('/data',    gub.requireRole('admin'),       handler)
    */
-  function requireRole(minimumRole: 'viewer' | 'contributor' | 'manager' | 'admin') {
-    const ROLE_RANK: Record<string, number> = {
-      viewer: 0,
-      contributor: 1,
-      manager: 2,
-      admin: 3,
-    };
-
+  function requireRole(minimumRole: Role) {
     return function roleMiddleware(
-      req: Request,
-      res: Response,
-      next: NextFunction,
-    ) {
-      const ctx = (req as Request & { gub?: GUBRequestContext }).gub;
+      req: GUBRequest,
+      res: GUBResponse,
+      next: GUBNextFunction,
+    ): void {
+      const ctx = (req as GUBRequest & { gub?: GUBRequestContext }).gub;
 
       if (!ctx) {
-        res.status(401).json({ error: 'Not authenticated' });
+        res.status(401).json({ code: 'UNAUTHORIZED', error: 'Not authenticated' });
+        return;
+      }
+
+      // Admins bypass all role checks
+      if (ctx.user.isAdmin) {
+        next();
         return;
       }
 
       if (!ctx.appPermission) {
-        res.status(403).json({ error: 'No permission for this app' });
+        res.status(403).json({ code: 'NO_APP_PERMISSION', error: 'No permission for this application' });
         return;
       }
 
@@ -228,9 +252,10 @@ export function createGUBClient(config: GUBClientConfig) {
       const requiredRank = ROLE_RANK[minimumRole];
 
       if (userRank < requiredRank) {
-        res
-          .status(403)
-          .json({ error: `Requires ${minimumRole} role or higher` });
+        res.status(403).json({
+          code: 'INSUFFICIENT_ROLE',
+          error: `Requires '${minimumRole}' role or higher`,
+        });
         return;
       }
 
@@ -239,80 +264,72 @@ export function createGUBClient(config: GUBClientConfig) {
   }
 
   // ── Org data client ──────────────────────────────────────────────────────
-  // Server-to-server calls to GUB for org data.
-  // Pass the user's access token so GUB can scope results appropriately.
+  // Server-to-server calls to GUB for org data (accounts, campaigns, staff).
+  // Pass the user's access token so GUB scopes results to their grants.
 
-  function orgClient(accessToken: string) {
+  /**
+   * Create an org data client scoped to a user's access token.
+   *
+   * @example
+   * app.get('/dashboard', gub.middleware(), async (req, res) => {
+   *   const token = req.headers.authorization.split(' ')[1]
+   *   const org = gub.org(token)
+   *   const accounts = await org.listAccounts()
+   *   res.json({ accounts })
+   * })
+   */
+  function org(accessToken: string) {
     const headers = {
       Authorization: `Bearer ${accessToken}`,
       'Content-Type': 'application/json',
     };
 
     async function get<T>(path: string): Promise<T> {
-      const res = await fetch(`${gubUrl}${path}`, { headers });
+      const res = await fetch(`${baseUrl}${path}`, { headers });
       if (!res.ok) {
         const err = await res.json().catch(() => ({})) as { message?: string };
-        throw new Error(err.message ?? `GUB request failed: ${res.status}`);
+        throw new Error(err.message ?? `GUB request failed: ${res.status} ${path}`);
       }
       return res.json() as Promise<T>;
     }
 
     return {
-      /**
-       * Fetch an account by ID.
-       * @example
-       * const account = await gub.orgClient(accessToken).getAccount(accountId)
-       */
-      getAccount: (id: string) => get<GUBAccount>(`/org/accounts/${id}`),
+      /** List all accounts the user has access to */
+      listAccounts: () =>
+        get<GUBAccount[]>('/org/accounts'),
 
-      /**
-       * List all accounts the user has access to.
-       * @example
-       * const accounts = await gub.orgClient(accessToken).listAccounts()
-       */
-      listAccounts: () => get<GUBAccount[]>('/org/accounts'),
+      /** Fetch a single account by ID */
+      getAccount: (id: string) =>
+        get<GUBAccount>(`/org/accounts/${id}`),
 
-      /**
-       * List campaigns for an account.
-       * @example
-       * const campaigns = await gub.orgClient(accessToken).listCampaigns(accountId)
-       */
+      /** List campaigns for an account */
       listCampaigns: (accountId: string) =>
         get<GUBCampaign[]>(`/org/accounts/${accountId}/campaigns`),
 
-      /**
-       * Fetch a campaign by ID.
-       * @example
-       * const campaign = await gub.orgClient(accessToken).getCampaign(campaignId)
-       */
-      getCampaign: (id: string) => get<GUBCampaign>(`/org/campaigns/${id}`),
+      /** Fetch a single campaign by ID */
+      getCampaign: (id: string) =>
+        get<GUBCampaign>(`/org/campaigns/${id}`),
 
-      /**
-       * List staff members.
-       * @example
-       * const staff = await gub.orgClient(accessToken).listStaff()
-       */
-      listStaff: () => get<GUBStaff[]>('/org/staff'),
+      /** List active staff members. Pass { all: true } to include former staff */
+      listStaff: (opts?: { all?: boolean }) =>
+        get<GUBStaff[]>(`/org/staff${opts?.all ? '?all=true' : ''}`),
 
-      /**
-       * Fetch a staff member by ID.
-       * @example
-       * const member = await gub.orgClient(accessToken).getStaffMember(staffId)
-       */
-      getStaffMember: (id: string) => get<GUBStaff>(`/org/staff/${id}`),
+      /** Fetch a single staff member by ID */
+      getStaffMember: (id: string) =>
+        get<GUBStaff>(`/org/staff/${id}`),
     };
   }
 
-  return { verifyToken, middleware, requireRole, orgClient };
+  return { verifyToken, middleware, requireRole, org };
 }
 
-// ── Type augmentation helper ───────────────────────────────────────────────
+// ── Express type augmentation ──────────────────────────────────────────────
 // Add this to your project's type declarations to get req.gub typed:
 //
 // declare global {
 //   namespace Express {
 //     interface Request {
-//       gub: import('gcp-universal-backend/backend').GUBRequestContext
+//       gub: import('gcp-universal-backend/sdk/backend').GUBRequestContext
 //     }
 //   }
 // }

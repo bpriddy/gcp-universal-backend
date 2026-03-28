@@ -5,17 +5,16 @@
   "main": "dist/server.js",
   "exports": {
     ".": "./dist/server.js",
-    "./frontend": "./sdk/frontend/index.tsx",
-    "./backend": "./sdk/backend/index.ts"
+    "./sdk/frontend": "./sdk/frontend/index.tsx",
+    "./sdk/backend": "./sdk/backend/index.ts"
   },
   "peerDependencies": {
-    "@react-oauth/google": ">=0.12.0",
-    "jose": ">=5.0.0",
-    "react": ">=18.0.0"
+    "react": ">=18.0.0",
+    "react-dom": ">=18.0.0"
   },
   "peerDependenciesMeta": {
-    "@react-oauth/google": { "optional": true },
-    "react": { "optional": true }
+    "react": { "optional": true },
+    "react-dom": { "optional": true }
   },
   "scripts": {
     "build": "tsc",

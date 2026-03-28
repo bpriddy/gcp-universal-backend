@@ -2,12 +2,13 @@
  * GUB Frontend SDK
  *
  * React SDK for the GCP Universal Backend.
+ * Uses Google Identity Services (GIS) — no additional npm packages required.
  *
  * Install:
- *   npm install github:bpriddy/gcp-universal-backend @react-oauth/google
+ *   npm install github:bpriddy/gcp-universal-backend
  *
  * Usage:
- *   import { GUBProvider, useGUB } from 'gcp-universal-backend/frontend'
+ *   import { GUBProvider, useGUB } from 'gcp-universal-backend/sdk/frontend'
  */
 
 import React, {
@@ -18,7 +19,6 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import { GoogleOAuthProvider, useGoogleLogin } from '@react-oauth/google';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -29,9 +29,13 @@ export interface TokenPermission {
 }
 
 export interface GUBUser {
+  /** User UUID — users.id in GUB */
   sub: string;
   email: string;
   displayName: string | null;
+  avatarUrl: string | null;
+  /** Superuser flag — bypasses all access_grants checks on GUB */
+  isAdmin: boolean;
   permissions: TokenPermission[];
   exp: number;
 }
@@ -41,30 +45,28 @@ export interface GUBConfig {
   gubUrl: string;
   /** Google OAuth client ID */
   googleClientId: string;
-  /** App ID — must match a UserAppPermission row in GUB */
-  appId: string;
 }
 
 export interface GUBContextValue {
   /** Authenticated user, or null if not logged in */
   user: GUBUser | null;
-  /** True while login/token refresh is in progress */
+  /** True while login / token refresh is in progress */
   isLoading: boolean;
   /** True if the user is authenticated */
   isAuthenticated: boolean;
-  /** Initiate Google OAuth login flow */
+  /** Initiate Google OAuth login flow via One Tap or popup */
   login: () => void;
-  /** Clear session and tokens */
-  logout: () => void;
+  /** Clear session and revoke refresh token */
+  logout: () => Promise<void>;
   /**
-   * Authenticated fetch — automatically attaches Authorization header
-   * and handles token refresh on 401.
+   * Authenticated fetch — automatically attaches the Authorization header
+   * and silently refreshes the token on 401 before retrying once.
    *
-   * Usage:
-   *   const { fetch: authFetch } = useGUB()
-   *   const data = await authFetch('https://api.yourdomain.com/endpoint')
+   * @example
+   * const { fetch: authFetch } = useGUB()
+   * const data = await authFetch('https://api.yourdomain.com/endpoint').then(r => r.json())
    */
-  fetch: (input: RequestInfo, init?: RequestInit) => Promise<Response>;
+  fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
   /**
    * Raw access token — use only if you need the JWT directly.
    * Prefer fetch() for making authenticated requests.
@@ -73,129 +75,214 @@ export interface GUBContextValue {
 }
 
 // ── Internal token storage ─────────────────────────────────────────────────
-// Tokens are stored in memory only — never localStorage or sessionStorage.
-// This prevents XSS token theft. Tokens are lost on page refresh (by design —
-// the refresh token flow re-issues them automatically).
+// Stored in module-level variables (memory only — never localStorage).
+// This prevents XSS token theft. Tokens are lost on page refresh;
+// the silent refresh flow re-issues them from the refresh token automatically.
 
 let _accessToken: string | null = null;
 let _refreshToken: string | null = null;
+
+// ── Google Identity Services ───────────────────────────────────────────────
+// Loaded once via script injection — no @react-oauth/google dependency.
+// The GIS credential response contains an ID token (not an access token),
+// which is exactly what GUB's POST /auth/google expects.
+
+declare global {
+  interface Window {
+    google?: {
+      accounts: {
+        id: {
+          initialize: (config: {
+            client_id: string;
+            callback: (response: { credential: string }) => void;
+            auto_select?: boolean;
+            cancel_on_tap_outside?: boolean;
+          }) => void;
+          prompt: (notification?: (n: { isNotDisplayed: () => boolean; isSkippedMoment: () => boolean }) => void) => void;
+          renderButton: (parent: HTMLElement, options: object) => void;
+          disableAutoSelect: () => void;
+        };
+      };
+    };
+  }
+}
+
+function loadGoogleScript(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (window.google?.accounts) {
+      resolve();
+      return;
+    }
+    if (document.getElementById('gub-gis-script')) {
+      // Script tag exists but not yet loaded — wait for it
+      document.getElementById('gub-gis-script')!.addEventListener('load', () => resolve());
+      return;
+    }
+    const script = document.createElement('script');
+    script.id = 'gub-gis-script';
+    script.src = 'https://accounts.google.com/gsi/client';
+    script.async = true;
+    script.defer = true;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('Failed to load Google Identity Services'));
+    document.head.appendChild(script);
+  });
+}
 
 // ── Context ────────────────────────────────────────────────────────────────
 
 const GUBContext = createContext<GUBContextValue | null>(null);
 
-// ── Provider internals ─────────────────────────────────────────────────────
+// ── Provider ───────────────────────────────────────────────────────────────
 
-interface GUBProviderInnerProps {
+export interface GUBProviderProps {
   config: GUBConfig;
   children: React.ReactNode;
 }
 
-function GUBProviderInner({ config, children }: GUBProviderInnerProps) {
+/**
+ * Wrap your app with GUBProvider at the root level.
+ *
+ * @example
+ * <GUBProvider config={{ gubUrl: '...', googleClientId: '...' }}>
+ *   <App />
+ * </GUBProvider>
+ */
+export function GUBProvider({ config, children }: GUBProviderProps) {
   const [user, setUser] = useState<GUBUser | null>(null);
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const baseUrl = config.gubUrl.replace(/\/$/, '');
 
-  // Exchange Google credential for a GUB JWT
+  // Decode JWT payload and store tokens in memory
+  const storeTokens = useCallback((access: string, refresh: string) => {
+    _accessToken = access;
+    _refreshToken = refresh;
+    setAccessToken(access);
+
+    // JWT payload is base64 encoded — readable without crypto
+    const payload = JSON.parse(atob(access.split('.')[1])) as GUBUser;
+
+    // Merge avatarUrl from auth response since it may not be in JWT claims
+    setUser(payload);
+
+    // Schedule silent refresh 30s before expiry
+    const msUntilExpiry = payload.exp * 1000 - Date.now();
+    const refreshIn = Math.max(msUntilExpiry - 30_000, 0);
+    if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+    refreshTimerRef.current = setTimeout(silentRefresh, refreshIn);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [baseUrl]);
+
+  // Silent token refresh
+  const silentRefresh = useCallback(async () => {
+    if (!_refreshToken) return;
+    try {
+      const res = await window.fetch(`${baseUrl}/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken: _refreshToken }),
+      });
+      if (!res.ok) {
+        // Refresh token expired or revoked — clear session
+        _accessToken = null;
+        _refreshToken = null;
+        setAccessToken(null);
+        setUser(null);
+        return;
+      }
+      const data = await res.json();
+      storeTokens(data.accessToken, data.refreshToken);
+    } catch {
+      // Network error — keep existing tokens until they expire
+    }
+  }, [baseUrl, storeTokens]);
+
+  // Exchange Google ID token for a GUB JWT
   const exchangeGoogleCredential = useCallback(
-    async (googleAccessToken: string) => {
+    async (credential: string) => {
       setIsLoading(true);
       try {
-        const res = await window.fetch(`${config.gubUrl}/auth/google`, {
+        const res = await window.fetch(`${baseUrl}/auth/google`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            accessToken: googleAccessToken,
-            appId: config.appId,
-          }),
+          // GUB expects idToken — the GIS credential IS an ID token
+          body: JSON.stringify({ idToken: credential }),
         });
-
         if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
+          const err = await res.json().catch(() => ({})) as { message?: string };
           throw new Error(err.message ?? 'Authentication failed');
         }
-
         const data = await res.json();
         storeTokens(data.accessToken, data.refreshToken);
       } finally {
         setIsLoading(false);
       }
     },
-    [config.gubUrl, config.appId],
+    [baseUrl, storeTokens],
   );
 
-  // Store tokens and decode user from JWT payload
-  const storeTokens = useCallback((access: string, refresh: string) => {
-    _accessToken = access;
-    _refreshToken = refresh;
-    setAccessToken(access);
-
-    // Decode payload (JWTs are base64 — no crypto needed to read claims)
-    const payload = JSON.parse(atob(access.split('.')[1])) as GUBUser & {
-      exp: number;
-    };
-    setUser(payload);
-
-    // Schedule silent refresh 30 seconds before expiry
-    const msUntilExpiry = payload.exp * 1000 - Date.now();
-    const refreshIn = Math.max(msUntilExpiry - 30_000, 0);
-
-    if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
-    refreshTimerRef.current = setTimeout(silentRefresh, refreshIn);
-  }, []);
-
-  // Silent token refresh using the refresh token
-  const silentRefresh = useCallback(async () => {
-    if (!_refreshToken) return;
+  // Trigger Google One Tap / popup login
+  const login = useCallback(async () => {
+    setIsLoading(true);
     try {
-      const res = await window.fetch(`${config.gubUrl}/auth/refresh`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refreshToken: _refreshToken }),
+      await loadGoogleScript();
+      window.google!.accounts.id.initialize({
+        client_id: config.googleClientId,
+        callback: ({ credential }) => exchangeGoogleCredential(credential),
+        auto_select: false,
+        cancel_on_tap_outside: true,
       });
-
-      if (!res.ok) {
-        // Refresh token expired or revoked — force re-login
-        logout();
-        return;
-      }
-
-      const data = await res.json();
-      storeTokens(data.accessToken, data.refreshToken);
-    } catch {
-      logout();
+      window.google!.accounts.id.prompt((notification) => {
+        // If One Tap is suppressed (e.g. user dismissed it), stop loading
+        if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
+          setIsLoading(false);
+        }
+      });
+    } catch (err) {
+      setIsLoading(false);
+      throw err;
     }
-  }, [config.gubUrl, storeTokens]);
+  }, [config.googleClientId, exchangeGoogleCredential]);
 
-  const logout = useCallback(() => {
+  // Logout — revoke refresh token then clear local state
+  const logout = useCallback(async () => {
+    if (_refreshToken) {
+      try {
+        await window.fetch(`${baseUrl}/auth/logout`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refreshToken: _refreshToken }),
+        });
+      } catch {
+        // Best effort — clear local state regardless
+      }
+    }
+    if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
     _accessToken = null;
     _refreshToken = null;
     setAccessToken(null);
     setUser(null);
-    if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
-  }, []);
+    window.google?.accounts.id.disableAutoSelect();
+  }, [baseUrl]);
 
-  // Authenticated fetch — handles 401 → refresh → retry once
+  // Authenticated fetch — attaches JWT, retries once after silent refresh on 401
   const authFetch = useCallback(
-    async (input: RequestInfo, init: RequestInit = {}): Promise<Response> => {
+    async (input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> => {
       if (!_accessToken) throw new Error('Not authenticated');
 
       const doRequest = (token: string) =>
         window.fetch(input, {
           ...init,
-          headers: {
-            ...init.headers,
-            Authorization: `Bearer ${token}`,
-          },
+          headers: { ...init.headers, Authorization: `Bearer ${token}` },
         });
 
       const res = await doRequest(_accessToken);
 
       if (res.status === 401) {
-        // Token may have just expired — try a silent refresh then retry once
         await silentRefresh();
-        if (!_accessToken) throw new Error('Session expired');
+        if (!_accessToken) throw new Error('Session expired — please sign in again');
         return doRequest(_accessToken);
       }
 
@@ -203,17 +290,6 @@ function GUBProviderInner({ config, children }: GUBProviderInnerProps) {
     },
     [silentRefresh],
   );
-
-  // Google login hook
-  const googleLogin = useGoogleLogin({
-    onSuccess: (response) => exchangeGoogleCredential(response.access_token),
-    onError: () => setIsLoading(false),
-  });
-
-  const login = useCallback(() => {
-    setIsLoading(true);
-    googleLogin();
-  }, [googleLogin]);
 
   // Clean up refresh timer on unmount
   useEffect(() => {
@@ -227,7 +303,7 @@ function GUBProviderInner({ config, children }: GUBProviderInnerProps) {
       value={{
         user,
         isLoading,
-        isAuthenticated: !!user,
+        isAuthenticated: user !== null,
         login,
         logout,
         fetch: authFetch,
@@ -239,43 +315,21 @@ function GUBProviderInner({ config, children }: GUBProviderInnerProps) {
   );
 }
 
-// ── Public Provider ────────────────────────────────────────────────────────
-
-export interface GUBProviderProps {
-  config: GUBConfig;
-  children: React.ReactNode;
-}
-
-/**
- * Wrap your app with GUBProvider at the root level.
- *
- * @example
- * <GUBProvider config={{ gubUrl: '...', googleClientId: '...', appId: '...' }}>
- *   <App />
- * </GUBProvider>
- */
-export function GUBProvider({ config, children }: GUBProviderProps) {
-  return (
-    <GoogleOAuthProvider clientId={config.googleClientId}>
-      <GUBProviderInner config={config}>{children}</GUBProviderInner>
-    </GoogleOAuthProvider>
-  );
-}
-
 // ── Hook ───────────────────────────────────────────────────────────────────
 
 /**
  * Access the GUB auth context from any component inside GUBProvider.
  *
  * @example
- * function App() {
- *   const { isAuthenticated, login, logout, user, fetch } = useGUB()
+ * function Dashboard() {
+ *   const { isAuthenticated, isLoading, login, logout, user, fetch } = useGUB()
  *
+ *   if (isLoading) return <p>Loading...</p>
  *   if (!isAuthenticated) return <button onClick={login}>Sign in with Google</button>
  *
  *   return (
  *     <div>
- *       <p>Hello {user.displayName}</p>
+ *       <p>Hello {user.displayName ?? user.email}</p>
  *       <button onClick={logout}>Sign out</button>
  *     </div>
  *   )
@@ -287,26 +341,20 @@ export function useGUB(): GUBContextValue {
   return ctx;
 }
 
+// ── Pre-built login button ─────────────────────────────────────────────────
+
 /**
- * Pre-built sign-in button. Renders a "Sign in with Google" button
- * or a sign-out button depending on auth state.
+ * Pre-built sign-in / sign-out button.
+ * Shows "Sign in with Google" when logged out, "Sign out (email)" when in.
  *
  * @example
- * <GUBLoginButton />
+ * <GUBLoginButton className="btn btn-primary" />
  */
-export function GUBLoginButton({
-  className,
-}: {
-  className?: string;
-}) {
+export function GUBLoginButton({ className }: { className?: string }) {
   const { isAuthenticated, isLoading, login, logout, user } = useGUB();
 
   if (isLoading) {
-    return (
-      <button disabled className={className}>
-        Signing in...
-      </button>
-    );
+    return <button disabled className={className}>Signing in...</button>;
   }
 
   if (isAuthenticated) {

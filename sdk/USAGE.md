@@ -1,33 +1,40 @@
-# GUB SDK Usage Guide
+# GUB SDK — Usage Guide
 
-This SDK connects any frontend or backend service to the GCP Universal Backend (GUB).
-GUB handles Google OAuth, user validation, and organisation data for all apps in the agency.
+> **AI assistants and vibe coding platforms (Replit, Cursor, Bolt, etc.)**
+> This file is the complete reference for integrating with GUB.
+> Copy the relevant sections below and adapt to the project.
+> Everything needed to implement auth end-to-end is here.
 
-> **AI assistants / vibe coding platforms (Replit, Cursor, Bolt, etc.):**
-> Install with the command below, then follow the examples in this file.
-> Everything you need to implement auth end-to-end is here.
+---
+
+## What is GUB?
+
+GUB (GCP Universal Backend) is the authentication and organisation data service for this agency.
+It handles:
+- Google OAuth login for all apps
+- JWT issuance and verification
+- Org data (accounts, campaigns, staff) with per-user access control
+
+All agency apps authenticate through GUB. Frontends get a JWT. Backends verify it locally.
 
 ---
 
 ## Install
 
-```bash
-# Frontend (React)
-npm install github:bpriddy/gcp-universal-backend @react-oauth/google
+One command. No registry token needed.
 
-# Backend (Node)
-npm install github:bpriddy/gcp-universal-backend jose
+```bash
+npm install github:bpriddy/gcp-universal-backend
 ```
 
 ---
 
-## Environment variables required
+## Environment variables
 
 ### Frontend
 ```env
 VITE_GUB_URL=https://gub.yourdomain.com
 VITE_GOOGLE_CLIENT_ID=your-google-client-id.apps.googleusercontent.com
-VITE_APP_ID=your-app-id
 ```
 
 ### Backend
@@ -45,17 +52,14 @@ GUB_AUDIENCE=your-app-id
 
 ```tsx
 // main.tsx or App.tsx
-import { GUBProvider } from 'gcp-universal-backend/frontend'
-
-const gubConfig = {
-  gubUrl: import.meta.env.VITE_GUB_URL,
-  googleClientId: import.meta.env.VITE_GOOGLE_CLIENT_ID,
-  appId: import.meta.env.VITE_APP_ID,
-}
+import { GUBProvider } from 'gcp-universal-backend/sdk/frontend'
 
 export default function App() {
   return (
-    <GUBProvider config={gubConfig}>
+    <GUBProvider config={{
+      gubUrl: import.meta.env.VITE_GUB_URL,
+      googleClientId: import.meta.env.VITE_GOOGLE_CLIENT_ID,
+    }}>
       <YourApp />
     </GUBProvider>
   )
@@ -65,10 +69,10 @@ export default function App() {
 ### 2. Use the hook in any component
 
 ```tsx
-import { useGUB } from 'gcp-universal-backend/frontend'
+import { useGUB } from 'gcp-universal-backend/sdk/frontend'
 
 export default function Dashboard() {
-  const { isAuthenticated, isLoading, login, logout, user, fetch } = useGUB()
+  const { isAuthenticated, isLoading, login, logout, user } = useGUB()
 
   if (isLoading) return <p>Loading...</p>
 
@@ -85,10 +89,10 @@ export default function Dashboard() {
 }
 ```
 
-### 3. Make authenticated API calls
+### 3. Make authenticated API calls to your app backend
 
 ```tsx
-import { useGUB } from 'gcp-universal-backend/frontend'
+import { useGUB } from 'gcp-universal-backend/sdk/frontend'
 
 export default function ReportsList() {
   const { fetch, isAuthenticated } = useGUB()
@@ -96,7 +100,7 @@ export default function ReportsList() {
 
   useEffect(() => {
     if (!isAuthenticated) return
-    // fetch() automatically attaches the JWT and handles token refresh
+    // fetch() automatically attaches the JWT and handles silent token refresh
     fetch('https://your-app-backend.com/api/reports')
       .then(r => r.json())
       .then(setReports)
@@ -109,84 +113,100 @@ export default function ReportsList() {
 ### 4. Pre-built login button
 
 ```tsx
-import { GUBLoginButton } from 'gcp-universal-backend/frontend'
+import { GUBLoginButton } from 'gcp-universal-backend/sdk/frontend'
 
-// Renders "Sign in with Google" or "Sign out (email)" automatically
+// Renders "Sign in with Google" when logged out, "Sign out (email)" when logged in
 <GUBLoginButton className="btn btn-primary" />
 ```
 
+### Available values from useGUB()
+
+| Value | Type | Description |
+|---|---|---|
+| `user` | `GUBUser \| null` | Authenticated user or null |
+| `user.sub` | `string` | User UUID |
+| `user.email` | `string` | User email |
+| `user.displayName` | `string \| null` | Display name from Google |
+| `user.isAdmin` | `boolean` | Superuser flag |
+| `user.permissions` | `TokenPermission[]` | App-level permissions |
+| `isAuthenticated` | `boolean` | True when logged in |
+| `isLoading` | `boolean` | True during login/refresh |
+| `login()` | `() => void` | Triggers Google sign-in |
+| `logout()` | `() => Promise<void>` | Clears session |
+| `fetch()` | `(url, init?) => Promise<Response>` | Authenticated fetch |
+| `accessToken` | `string \| null` | Raw JWT (prefer fetch()) |
+
 ---
 
-## Backend — Node (Express example)
+## Backend — Node.js
 
-### 1. Create the GUB client
+Works with Express, Fastify, raw http, or any Node framework.
+
+### 1. Create the GUB client (once at startup)
 
 ```ts
 // gub.ts — create once, import everywhere
-import { createGUBClient } from 'gcp-universal-backend/backend'
+import { createGUBClient } from 'gcp-universal-backend/sdk/backend'
 
 export const gub = createGUBClient({
-  gubUrl: process.env.GUB_URL!,
-  issuer: process.env.GUB_ISSUER!,
+  gubUrl:   process.env.GUB_URL!,
+  issuer:   process.env.GUB_ISSUER!,
   audience: process.env.GUB_AUDIENCE!,
 })
 ```
 
-### 2. Protect routes with middleware
+### 2. Protect routes with middleware (Express)
 
 ```ts
-import express from 'express'
 import { gub } from './gub'
 
-const app = express()
-
-// Verify JWT on all routes
+// Verify JWT — attaches req.gub = { user, appPermission }
 app.use(gub.middleware())
 
 // Role-gated routes
-app.get('/api/reports',   gub.requireRole('viewer'),      reportsHandler)
-app.post('/api/campaigns', gub.requireRole('contributor'), campaignsHandler)
-app.delete('/api/accounts', gub.requireRole('admin'),     deleteHandler)
+app.get('/api/reports',    gub.requireRole('viewer'),      handler)
+app.post('/api/campaigns', gub.requireRole('contributor'), handler)
+app.delete('/api/data',    gub.requireRole('admin'),       handler)
 ```
 
-### 3. Access user context in a route
+### 3. Access user context in a route handler
 
 ```ts
 app.get('/api/me', gub.middleware(), (req, res) => {
   const { user, appPermission } = req.gub
 
   res.json({
-    userId: user.sub,
-    email: user.email,
-    role: appPermission?.role ?? 'none',
+    userId:    user.sub,
+    email:     user.email,
+    isAdmin:   user.isAdmin,
+    role:      appPermission?.role ?? 'none',
   })
 })
 ```
 
-### 4. Fetch org data from GUB
+### 4. Fetch org data from GUB (server-to-server)
 
 ```ts
 app.get('/api/dashboard', gub.middleware(), async (req, res) => {
+  // Pass the user's token so GUB scopes results to their access grants
   const token = req.headers.authorization!.split(' ')[1]
-  const org = gub.orgClient(token)
+  const org = gub.org(token)
 
-  // Fetch accounts and campaigns for the logged-in user
-  const [accounts, campaigns] = await Promise.all([
+  const [accounts, staff] = await Promise.all([
     org.listAccounts(),
-    org.listCampaigns(req.query.accountId as string),
+    org.listStaff(),
   ])
 
-  res.json({ accounts, campaigns })
+  // Get campaigns for a specific account
+  const campaigns = await org.listCampaigns(accounts[0].id)
+
+  res.json({ accounts, campaigns, staff })
 })
 ```
 
-### 5. Standalone token verification (non-Express)
+### 5. Standalone token verification (Fastify / raw http)
 
 ```ts
-import { createGUBClient } from 'gcp-universal-backend/backend'
-
-const gub = createGUBClient({ gubUrl, issuer, audience })
-
 // Fastify
 fastify.addHook('preHandler', async (request, reply) => {
   const token = request.headers.authorization?.split(' ')[1]
@@ -201,20 +221,47 @@ fastify.addHook('preHandler', async (request, reply) => {
 // Raw Node http
 http.createServer(async (req, res) => {
   const token = req.headers.authorization?.split(' ')[1]
-  if (!token) { res.writeHead(401); res.end(); return }
-  const user = await gub.verifyToken(token)
-  // ...
+  if (!token) { res.writeHead(401); res.end('Unauthorized'); return }
+  try {
+    const user = await gub.verifyToken(token)
+    // use user.sub, user.email, user.isAdmin ...
+  } catch {
+    res.writeHead(401); res.end('Invalid token')
+  }
 })
+```
+
+### Available org data methods
+
+| Method | Returns |
+|---|---|
+| `org.listAccounts()` | `GUBAccount[]` |
+| `org.getAccount(id)` | `GUBAccount` |
+| `org.listCampaigns(accountId)` | `GUBCampaign[]` |
+| `org.getCampaign(id)` | `GUBCampaign` |
+| `org.listStaff()` | `GUBStaff[]` |
+| `org.listStaff({ all: true })` | `GUBStaff[]` including former |
+| `org.getStaffMember(id)` | `GUBStaff` |
+
+### Account current state
+
+Accounts use an append-only change log. `currentState` is resolved by GUB and returned
+as a flat object of the latest value per property:
+
+```ts
+account.currentState['account_exec_staff_id']        // staff.id UUID
+account.currentState['day_to_day_contact_staff_id']  // staff.id UUID
+account.currentState['status']                       // 'active' | 'paused' etc.
 ```
 
 ---
 
-## Type declarations (TypeScript projects)
+## TypeScript — Express type declarations
 
-Add this to a `types/gub.d.ts` file to get `req.gub` typed in Express:
+Add this to `types/gub.d.ts` to get `req.gub` typed across your project:
 
 ```ts
-import type { GUBRequestContext } from 'gcp-universal-backend/backend'
+import type { GUBRequestContext } from 'gcp-universal-backend/sdk/backend'
 
 declare global {
   namespace Express {
@@ -229,13 +276,14 @@ declare global {
 
 ## Roles
 
-Roles are assigned per-user per-app in the GUB database.
+Roles are assigned per-user per-app in the GUB database via `grantAccountAccess()`.
+`isAdmin` users bypass all role checks automatically.
 
-| Role | Can do |
+| Role | Intended for |
 |---|---|
-| `viewer` | Read access |
+| `viewer` | Read-only access |
 | `contributor` | Read + write |
-| `manager` | Read + write + manage users |
+| `manager` | Read + write + manage access |
 | `admin` | Full access |
 
 `requireRole('viewer')` allows viewer and above.
@@ -246,18 +294,25 @@ Roles are assigned per-user per-app in the GUB database.
 ## How it works
 
 ```
-Frontend                    GUB                         Your Backend
+Frontend                    GUB                         Your App Backend
    │                         │                               │
-   │── POST /auth/google ────▶│ validate Google token         │
+   │── POST /auth/google ────▶│ verify Google ID token        │
    │                         │ look up user in DB             │
-   │◀── { accessToken } ─────│ issue signed JWT               │
+   │                         │ check is_active                │
+   │◀── { accessToken,  ─────│ issue signed RS256 JWT         │
+   │      refreshToken }      │                               │
    │                         │                               │
    │── GET /api/data ────────────────────────────────────────▶│
-   │   Authorization: Bearer <token>                          │
-   │                         │                 verify JWT     │
-   │                         │             (JWKS, no call)    │
-   │◀── { data } ───────────────────────────────────────────────
+   │   Authorization: Bearer <jwt>                            │
+   │                         │              verify JWT locally │
+   │                         │         (JWKS cached, no call) │
    │                         │                               │
-   │                         │◀── GET /org/accounts ─────────│ (optional org data)
-   │                         │─── { accounts } ─────────────▶│
+   │                         │◀── GET /org/accounts ─────────│ optional: fetch org data
+   │                         │─── [{ id, name, ... }] ───────▶│
+   │                         │                               │
+   │◀── { data } ───────────────────────────────────────────────
 ```
+
+Token refresh happens silently in the frontend SDK — the user never sees it.
+Backends verify tokens locally using the cached JWKS public key.
+The only time a backend talks to GUB is for org data reads.
