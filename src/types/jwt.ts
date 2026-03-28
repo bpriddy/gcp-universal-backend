@@ -9,6 +9,8 @@ export interface AccessTokenPayload {
   sub: string;
   email: string;
   displayName: string | null;
+  /** Superuser flag — bypasses all access_grants checks when true */
+  isAdmin: boolean;
   permissions: TokenPermission[];
   iss: string;
   aud: string | string[];

@@ -29,6 +29,7 @@ model User {
   grantedPerms  UserAppPermission[] @relation("GrantedByUser")
   externalIds   UserExternalId[]
   staffProfile  Staff?
+  accessGrants  AccessGrant[]
 
   @@map("users")
 }
@@ -62,6 +63,8 @@ model Staff {
   campaignsCreated Campaign[]       @relation("CampaignCreatedByStaff")
   campaignChanges  CampaignChange[] @relation("CampaignChangedByStaff")
   auditActions     AuditLog[]       @relation("AuditLogActorStaff")
+  grantsGiven      AccessGrant[]    @relation("AccessGrantGrantedByStaff")
+  grantsRevoked    AccessGrant[]    @relation("AccessGrantRevokedByStaff")
 
   @@index([userId])
   @@index([status])
@@ -186,6 +189,39 @@ model AuditLog {
   @@index([actorId, createdAt(sort: Desc)])
   @@index([action, createdAt(sort: Desc)])
   @@map("audit_log")
+}
+
+// ── Access control ─────────────────────────────────────────────────────────
+// Fully explicit per-resource grants. Every user needs a row per resource.
+// No implicit inheritance. grantAccountAccess() creates all rows in one call.
+// Soft revoke only — never hard-delete, preserve audit trail.
+// is_admin on users bypasses all checks — superuser escape hatch.
+//
+// NOTE: the partial unique index (WHERE revoked_at IS NULL) cannot be expressed
+// in Prisma schema — it lives only in the migration SQL. Prisma's @@unique
+// without a WHERE clause would incorrectly block re-granting after revocation.
+
+model AccessGrant {
+  id           String    @id @default(uuid()) @db.Uuid
+  userId       String    @map("user_id") @db.Uuid
+  resourceType String    @map("resource_type")
+  resourceId   String    @map("resource_id") @db.Uuid
+  role         String    @default("viewer")
+  grantedBy    String    @map("granted_by") @db.Uuid
+  grantedAt    DateTime  @default(now()) @map("granted_at") @db.Timestamptz
+  expiresAt    DateTime? @map("expires_at") @db.Timestamptz
+  revokedAt    DateTime? @map("revoked_at") @db.Timestamptz
+  revokedBy    String?   @map("revoked_by") @db.Uuid
+
+  user           User   @relation(fields: [userId], references: [id], onDelete: Restrict)
+  grantedByStaff Staff  @relation("AccessGrantGrantedByStaff", fields: [grantedBy], references: [id], onDelete: Restrict)
+  revokedByStaff Staff? @relation("AccessGrantRevokedByStaff", fields: [revokedBy], references: [id], onDelete: Restrict)
+
+  @@index([userId])
+  @@index([userId, resourceType, resourceId])
+  @@index([resourceType, resourceId])
+  @@index([grantedBy])
+  @@map("access_grants")
 }
 
 // ── Auth support tables ────────────────────────────────────────────────────

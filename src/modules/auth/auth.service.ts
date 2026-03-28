@@ -33,6 +33,7 @@ export async function googleLogin(
     id: user.id,
     email: user.email,
     displayName: user.displayName,
+    isAdmin: user.isAdmin,
     permissions: user.permissions,
   });
 
@@ -84,6 +85,7 @@ export async function refreshTokens(
     id: user.id,
     email: user.email,
     displayName: user.displayName,
+    isAdmin: user.isAdmin,
     permissions: user.permissions,
   });
 

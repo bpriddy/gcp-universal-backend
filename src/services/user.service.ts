@@ -9,6 +9,7 @@ export interface UserWithPermissions {
   displayName: string | null;
   avatarUrl: string | null;
   isActive: boolean;
+  isAdmin: boolean;
   permissions: TokenPermission[];
 }
 
@@ -44,6 +45,7 @@ export async function findOrCreateUser(
       displayName: googlePayload.name ?? existing.displayName,
       avatarUrl: googlePayload.picture ?? existing.avatarUrl,
       isActive: existing.isActive,
+      isAdmin: existing.isAdmin,
       permissions: existing.permissions.map((p) => ({
         appId: p.appId,
         dbIdentifier: p.dbIdentifier,
@@ -72,6 +74,7 @@ export async function findOrCreateUser(
     displayName: created.displayName,
     avatarUrl: created.avatarUrl,
     isActive: created.isActive,
+    isAdmin: created.isAdmin,
     permissions: [],
   };
 }
@@ -92,6 +95,7 @@ export async function getUserWithPermissions(
     displayName: user.displayName,
     avatarUrl: user.avatarUrl,
     isActive: user.isActive,
+    isAdmin: user.isAdmin,
     permissions: user.permissions.map((p) => ({
       appId: p.appId,
       dbIdentifier: p.dbIdentifier,

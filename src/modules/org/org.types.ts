@@ -1,3 +1,13 @@
+// ── Errors ────────────────────────────────────────────────────────────────
+
+export class AccessDeniedError extends Error {
+  readonly code = 'ACCESS_DENIED';
+  constructor() {
+    super('You do not have access to this resource');
+    this.name = 'AccessDeniedError';
+  }
+}
+
 // ── Response shapes returned by the org API ───────────────────────────────
 // These mirror the SDK types in sdk/backend/index.ts.
 // Changes here should be reflected there.

@@ -1,4 +1,6 @@
 import { prisma } from '../../config/database';
+import { checkAccess, getGrantedResourceIds } from './access.service';
+import { AccessDeniedError } from './org.types';
 import type {
   AccountResponse,
   AccountCurrentState,
@@ -9,7 +11,7 @@ import type {
 // ── Account current state ──────────────────────────────────────────────────
 // Accounts use an append-only EAV log (account_changes).
 // Current state = latest changedAt per property.
-// This is resolved at read time — no materialised view needed at this scale.
+// Resolved at read time — no materialised view needed at this scale.
 
 function resolveCurrentState(
   changes: Array<{
@@ -31,7 +33,6 @@ function resolveCurrentState(
 
   const state: AccountCurrentState = {};
   for (const [property, change] of latest) {
-    // Coerce whichever value column is populated to a string
     state[property] =
       change.valueText ??
       change.valueUuid ??
@@ -43,14 +44,18 @@ function resolveCurrentState(
 
 // ── Accounts ───────────────────────────────────────────────────────────────
 
-export async function listAccounts(): Promise<AccountResponse[]> {
+export async function listAccounts(
+  userId: string,
+  isAdmin: boolean,
+): Promise<AccountResponse[]> {
+  const where = isAdmin
+    ? {}
+    : { id: { in: await getGrantedResourceIds(userId, 'account') } };
+
   const accounts = await prisma.account.findMany({
+    where,
     orderBy: { name: 'asc' },
-    include: {
-      changes: {
-        orderBy: { changedAt: 'desc' },
-      },
-    },
+    include: { changes: { orderBy: { changedAt: 'desc' } } },
   });
 
   return accounts.map((a) => ({
@@ -63,17 +68,20 @@ export async function listAccounts(): Promise<AccountResponse[]> {
   }));
 }
 
-export async function getAccount(id: string): Promise<AccountResponse | null> {
+export async function getAccount(
+  id: string,
+  userId: string,
+  isAdmin: boolean,
+): Promise<AccountResponse | null> {
   const account = await prisma.account.findUnique({
     where: { id },
-    include: {
-      changes: {
-        orderBy: { changedAt: 'desc' },
-      },
-    },
+    include: { changes: { orderBy: { changedAt: 'desc' } } },
   });
 
   if (!account) return null;
+
+  const hasAccess = await checkAccess(userId, 'account', id, isAdmin);
+  if (!hasAccess) throw new AccessDeniedError();
 
   return {
     id: account.id,
@@ -89,9 +97,23 @@ export async function getAccount(id: string): Promise<AccountResponse | null> {
 
 export async function listCampaignsByAccount(
   accountId: string,
+  userId: string,
+  isAdmin: boolean,
 ): Promise<CampaignResponse[]> {
+  // Verify account access first — throws AccessDeniedError if no grant
+  await getAccount(accountId, userId, isAdmin);
+
+  const grantedCampaignIds = isAdmin
+    ? null // null signals "no filter needed"
+    : await getGrantedResourceIds(userId, 'campaign');
+
   const campaigns = await prisma.campaign.findMany({
-    where: { accountId },
+    where: {
+      accountId,
+      ...(grantedCampaignIds !== null && {
+        id: { in: grantedCampaignIds },
+      }),
+    },
     orderBy: { createdAt: 'desc' },
   });
 
@@ -100,9 +122,15 @@ export async function listCampaignsByAccount(
 
 export async function getCampaign(
   id: string,
+  userId: string,
+  isAdmin: boolean,
 ): Promise<CampaignResponse | null> {
   const campaign = await prisma.campaign.findUnique({ where: { id } });
   if (!campaign) return null;
+
+  const hasAccess = await checkAccess(userId, 'campaign', id, isAdmin);
+  if (!hasAccess) throw new AccessDeniedError();
+
   return campaignToResponse(campaign);
 }
 
@@ -137,6 +165,8 @@ function campaignToResponse(c: {
 }
 
 // ── Staff ──────────────────────────────────────────────────────────────────
+// Staff is a directory — any authenticated user can read it.
+// No access_grants check applied.
 
 export async function listStaff(activeOnly = true): Promise<StaffResponse[]> {
   const staff = await prisma.staff.findMany({

@@ -7,6 +7,7 @@ interface UserForToken {
   id: string;
   email: string;
   displayName: string | null;
+  isAdmin: boolean;
   permissions: TokenPermission[];
 }
 
@@ -28,6 +29,7 @@ export async function signAccessToken(user: UserForToken): Promise<string> {
   const token = await new SignJWT({
     email: user.email,
     displayName: user.displayName,
+    isAdmin: user.isAdmin,
     permissions: user.permissions,
   } satisfies Omit<AccessTokenPayload, 'sub' | 'iss' | 'aud' | 'iat' | 'exp' | 'jti'>)
     .setProtectedHeader({ alg: 'RS256', kid: config.JWT_KEY_ID })
