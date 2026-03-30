@@ -36,7 +36,7 @@ function resolveCurrentState(
     state[property] =
       change.valueText ??
       change.valueUuid ??
-      (change.valueDate ? change.valueDate.toISOString().split('T')[0] : null);
+      (change.valueDate ? (change.valueDate.toISOString().split('T')[0] ?? null) : null);
   }
 
   return state;
@@ -170,7 +170,7 @@ function campaignToResponse(c: {
 
 export async function listStaff(activeOnly = true): Promise<StaffResponse[]> {
   const staff = await prisma.staff.findMany({
-    where: activeOnly ? { status: { in: ['active', 'on_leave'] } } : undefined,
+    ...(activeOnly ? { where: { status: { in: ['active', 'on_leave'] } } } : {}),
     orderBy: { fullName: 'asc' },
   });
 

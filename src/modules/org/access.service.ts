@@ -105,7 +105,7 @@ export async function grantAccountAccess(
       resourceId: accountId,
       role,
       grantedBy,
-      expiresAt,
+      ...(expiresAt !== undefined ? { expiresAt } : {}),
     });
 
     // Grant access to each campaign
@@ -116,7 +116,7 @@ export async function grantAccountAccess(
         resourceId: campaignId,
         role,
         grantedBy,
-        expiresAt,
+        ...(expiresAt !== undefined ? { expiresAt } : {}),
       });
     }
   });
