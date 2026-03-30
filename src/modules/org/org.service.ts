@@ -165,12 +165,98 @@ function campaignToResponse(c: {
 }
 
 // ── Staff ──────────────────────────────────────────────────────────────────
-// Staff is a directory — any authenticated user can read it.
-// No access_grants check applied.
+// Access is governed by staff-scoped grants on the requesting user.
+//
+// Grant resourceTypes and their meaning:
+//   staff_all     → all staff (resourceId ignored — use nil UUID as sentinel)
+//   staff_current → all staff with status in ['active','on_leave']
+//   staff_office  → all staff whose officeId === resourceId
+//   staff_team    → all staff who are members of the team with id === resourceId
+//
+// Admins bypass all grant checks and receive all staff.
+// Users with no staff grants receive an empty list.
 
-export async function listStaff(activeOnly = true): Promise<StaffResponse[]> {
+const CURRENT_STATUSES = ['active', 'on_leave'];
+
+export async function listStaff(
+  userId: string,
+  isAdmin: boolean,
+  activeOnly = true,
+): Promise<StaffResponse[]> {
+  // Admins get everything — no grant check needed
+  if (isAdmin) {
+    const staff = await prisma.staff.findMany({
+      ...(activeOnly ? { where: { status: { in: CURRENT_STATUSES } } } : {}),
+      orderBy: { fullName: 'asc' },
+    });
+    return staff.map(staffToResponse);
+  }
+
+  // Fetch all active staff grants for this user
+  const grants = await prisma.accessGrant.findMany({
+    where: {
+      userId,
+      resourceType: { in: ['staff_all', 'staff_current', 'staff_office', 'staff_team'] },
+      revokedAt: null,
+      OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+    },
+  });
+
+  if (grants.length === 0) return [];
+
+  // Short-circuit: if any grant is staff_all, return everything
+  if (grants.some((g) => g.resourceType === 'staff_all')) {
+    const staff = await prisma.staff.findMany({
+      ...(activeOnly ? { where: { status: { in: CURRENT_STATUSES } } } : {}),
+      orderBy: { fullName: 'asc' },
+    });
+    return staff.map(staffToResponse);
+  }
+
+  // Build up a set of staff IDs from each grant scope
+  const staffIdSet = new Set<string>();
+
+  for (const grant of grants) {
+    if (grant.resourceType === 'staff_current') {
+      const current = await prisma.staff.findMany({
+        where: { status: { in: CURRENT_STATUSES } },
+        select: { id: true },
+      });
+      current.forEach((s) => staffIdSet.add(s.id));
+    }
+
+    if (grant.resourceType === 'staff_office') {
+      const officeStaff = await prisma.staff.findMany({
+        where: {
+          officeId: grant.resourceId,
+          ...(activeOnly ? { status: { in: CURRENT_STATUSES } } : {}),
+        },
+        select: { id: true },
+      });
+      officeStaff.forEach((s) => staffIdSet.add(s.id));
+    }
+
+    if (grant.resourceType === 'staff_team') {
+      const members = await prisma.teamMember.findMany({
+        where: { teamId: grant.resourceId },
+        select: { staffId: true },
+      });
+      // For team grants respect activeOnly by filtering after gathering IDs
+      const teamStaff = await prisma.staff.findMany({
+        where: {
+          id: { in: members.map((m) => m.staffId) },
+          ...(activeOnly ? { status: { in: CURRENT_STATUSES } } : {}),
+        },
+        select: { id: true },
+      });
+      teamStaff.forEach((s) => staffIdSet.add(s.id));
+    }
+  }
+
+  if (staffIdSet.size === 0) return [];
+
   const staff = await prisma.staff.findMany({
-    ...(activeOnly ? { where: { status: { in: ['active', 'on_leave'] } } } : {}),
+    where: { id: { in: Array.from(staffIdSet) } },
     orderBy: { fullName: 'asc' },
   });
 

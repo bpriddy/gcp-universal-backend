@@ -44,9 +44,47 @@ model User {
 // user_id is nullable — not all staff have platform access.
 // A staff record must never be hard-deleted; use status = 'former'.
 
+model Office {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String   @unique
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  staff Staff[]
+
+  @@map("offices")
+}
+
+model Team {
+  id          String  @id @default(uuid()) @db.Uuid
+  name        String  @unique
+  description String?
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  members TeamMember[]
+
+  @@map("teams")
+}
+
+model TeamMember {
+  id      String   @id @default(uuid()) @db.Uuid
+  teamId  String   @map("team_id") @db.Uuid
+  staffId String   @map("staff_id") @db.Uuid
+  addedAt DateTime @default(now()) @map("added_at") @db.Timestamptz
+
+  team  Team  @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  staff Staff @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  @@unique([teamId, staffId])
+  @@index([staffId])
+  @@map("team_members")
+}
+
 model Staff {
   id         String    @id @default(uuid()) @db.Uuid
   userId     String?   @unique @map("user_id") @db.Uuid
+  officeId   String?   @map("office_id") @db.Uuid
   fullName   String    @map("full_name")
   email      String    @unique
   title      String?
@@ -58,6 +96,8 @@ model Staff {
   updatedAt  DateTime  @updatedAt @map("updated_at") @db.Timestamptz
 
   user             User?           @relation(fields: [userId], references: [id], onDelete: SetNull)
+  office           Office?         @relation(fields: [officeId], references: [id], onDelete: SetNull)
+  teamMemberships  TeamMember[]
   externalIds      StaffExternalId[]
   accountChanges   AccountChange[]  @relation("AccountChangedByStaff")
   campaignsCreated Campaign[]       @relation("CampaignCreatedByStaff")
@@ -67,6 +107,7 @@ model Staff {
   grantsRevoked    AccessGrant[]    @relation("AccessGrantRevokedByStaff")
 
   @@index([userId])
+  @@index([officeId])
   @@index([status])
   @@map("staff")
 }

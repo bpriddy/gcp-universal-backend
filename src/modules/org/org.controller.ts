@@ -106,8 +106,9 @@ export async function listStaff(
   next: NextFunction,
 ): Promise<void> {
   try {
+    const { userId, isAdmin } = identity(req);
     const activeOnly = req.query['all'] !== 'true';
-    const staff = await orgService.listStaff(activeOnly);
+    const staff = await orgService.listStaff(userId, isAdmin, activeOnly);
     res.status(200).json(staff);
   } catch (err) {
     handleError(err, res, next);
