@@ -30,6 +30,12 @@ router.get(
   orgController.listCampaignsByAccount,
 );
 
+/**
+ * GET /org/accounts/:id/history
+ * Full change log for an account. Requires func:temporal grant (rolling or all_time).
+ */
+router.get('/accounts/:id/history', orgController.getAccountHistory);
+
 // ── Campaigns ──────────────────────────────────────────────────────────────
 
 /**
@@ -37,6 +43,12 @@ router.get(
  * Fetch a single campaign by ID.
  */
 router.get('/campaigns/:id', orgController.getCampaign);
+
+/**
+ * GET /org/campaigns/:id/history
+ * Full change log for a campaign. Requires func:temporal grant (rolling or all_time).
+ */
+router.get('/campaigns/:id/history', orgController.getCampaignHistory);
 
 // ── Staff ──────────────────────────────────────────────────────────────────
 

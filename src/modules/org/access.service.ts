@@ -166,6 +166,54 @@ export async function checkAccess(
   return grant !== null;
 }
 
+// ── Temporal access ───────────────────────────────────────────────────────
+// Controls how far back a user can query change-log / historical data.
+//
+// Roles (stored in access_grants.role where resource_type = 'func:temporal'):
+//   current_only  – default when no grant exists; point-in-time queries blocked
+//   rolling_1yr   – may query data changed within the last 1 year
+//   rolling_2yr   – last 2 years
+//   rolling_5yr   – last 5 years
+//   all_time      – no restriction
+//
+// Usage: call getTemporalCutoff() and, if it returns a Date, add a
+//   changedAt: { gte: cutoff } filter to any change-log query.
+//   If it returns null the caller should block historical access entirely.
+
+export type TemporalRole = 'current_only' | 'rolling_1yr' | 'rolling_2yr' | 'rolling_5yr' | 'all_time';
+
+/**
+ * Returns the earliest date a user may query, or null if they cannot see
+ * any historical data beyond the current state.
+ *
+ * Admins always get all_time access.
+ */
+export async function getTemporalCutoff(
+  userId: string,
+  isAdmin: boolean,
+): Promise<Date | null> {
+  if (isAdmin) return new Date(0); // epoch — unrestricted
+
+  const now = new Date();
+  const grant = await prisma.accessGrant.findFirst({
+    where: {
+      userId,
+      resourceType: 'func:temporal',
+      revokedAt: null,
+      OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+    },
+    select: { role: true },
+  });
+
+  const role = (grant?.role ?? 'current_only') as TemporalRole;
+
+  if (role === 'all_time') return new Date(0);
+  if (role === 'rolling_5yr') return new Date(Date.now() - 5 * 365.25 * 24 * 60 * 60 * 1000);
+  if (role === 'rolling_2yr') return new Date(Date.now() - 2 * 365.25 * 24 * 60 * 60 * 1000);
+  if (role === 'rolling_1yr') return new Date(Date.now() - 365.25 * 24 * 60 * 60 * 1000);
+  return null; // current_only — caller should not return historical data
+}
+
 // ── List granted resource IDs ─────────────────────────────────────────────
 // Used by org.service.ts to build scoped queries.
 

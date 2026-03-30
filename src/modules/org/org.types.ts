@@ -39,6 +39,16 @@ export interface CampaignResponse {
   updatedAt: Date;
 }
 
+export interface ChangeLogEntry {
+  id: string;
+  property: string;
+  valueText: string | null;
+  valueUuid: string | null;
+  valueDate: string | null;
+  changedBy: string | null;
+  changedAt: Date;
+}
+
 export interface StaffResponse {
   id: string;
   fullName: string;

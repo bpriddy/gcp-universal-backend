@@ -1,10 +1,11 @@
 import { prisma } from '../../config/database';
-import { checkAccess, getGrantedResourceIds } from './access.service';
+import { checkAccess, getGrantedResourceIds, getTemporalCutoff } from './access.service';
 import { AccessDeniedError } from './org.types';
 import type {
   AccountResponse,
   AccountCurrentState,
   CampaignResponse,
+  ChangeLogEntry,
   StaffResponse,
 } from './org.types';
 
@@ -269,6 +270,71 @@ export async function getStaffMember(
   const member = await prisma.staff.findUnique({ where: { id } });
   if (!member) return null;
   return staffToResponse(member);
+}
+
+// ── History ────────────────────────────────────────────────────────────────
+// Change-log endpoints gated by func:temporal grant.
+// Callers without a rolling or all_time grant receive 403.
+
+export async function getAccountHistory(
+  accountId: string,
+  userId: string,
+  isAdmin: boolean,
+): Promise<ChangeLogEntry[]> {
+  // Resource access check first
+  const hasAccess = await checkAccess(userId, 'account', accountId, isAdmin);
+  if (!hasAccess) throw new AccessDeniedError();
+
+  const cutoff = await getTemporalCutoff(userId, isAdmin);
+  if (cutoff === null) throw new AccessDeniedError();
+
+  const changes = await prisma.accountChange.findMany({
+    where: {
+      accountId,
+      changedAt: { gte: cutoff },
+    },
+    orderBy: { changedAt: 'desc' },
+  });
+
+  return changes.map((c) => ({
+    id: c.id,
+    property: c.property,
+    valueText: c.valueText,
+    valueUuid: c.valueUuid,
+    valueDate: c.valueDate ? c.valueDate.toISOString().split('T')[0] ?? null : null,
+    changedBy: c.changedBy,
+    changedAt: c.changedAt,
+  }));
+}
+
+export async function getCampaignHistory(
+  campaignId: string,
+  userId: string,
+  isAdmin: boolean,
+): Promise<ChangeLogEntry[]> {
+  const hasAccess = await checkAccess(userId, 'campaign', campaignId, isAdmin);
+  if (!hasAccess) throw new AccessDeniedError();
+
+  const cutoff = await getTemporalCutoff(userId, isAdmin);
+  if (cutoff === null) throw new AccessDeniedError();
+
+  const changes = await prisma.campaignChange.findMany({
+    where: {
+      campaignId,
+      changedAt: { gte: cutoff },
+    },
+    orderBy: { changedAt: 'desc' },
+  });
+
+  return changes.map((c) => ({
+    id: c.id,
+    property: c.property,
+    valueText: c.valueText,
+    valueUuid: c.valueUuid,
+    valueDate: c.valueDate ? c.valueDate.toISOString().split('T')[0] ?? null : null,
+    changedBy: c.changedBy,
+    changedAt: c.changedAt,
+  }));
 }
 
 function staffToResponse(s: {

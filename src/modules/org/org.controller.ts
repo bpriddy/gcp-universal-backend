@@ -55,6 +55,20 @@ export async function getAccount(
   }
 }
 
+export async function getAccountHistory(
+  req: Request<{ id: string }>,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const { userId, isAdmin } = identity(req);
+    const history = await orgService.getAccountHistory(req.params.id, userId, isAdmin);
+    res.status(200).json(history);
+  } catch (err) {
+    handleError(err, res, next);
+  }
+}
+
 // ── Campaigns ──────────────────────────────────────────────────────────────
 
 export async function listCampaignsByAccount(
@@ -92,6 +106,20 @@ export async function getCampaign(
       return;
     }
     res.status(200).json(campaign);
+  } catch (err) {
+    handleError(err, res, next);
+  }
+}
+
+export async function getCampaignHistory(
+  req: Request<{ id: string }>,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const { userId, isAdmin } = identity(req);
+    const history = await orgService.getCampaignHistory(req.params.id, userId, isAdmin);
+    res.status(200).json(history);
   } catch (err) {
     handleError(err, res, next);
   }

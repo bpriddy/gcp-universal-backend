@@ -52,9 +52,26 @@ model Office {
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
   updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz
 
-  staff Staff[]
+  staff   Staff[]
+  changes OfficeChange[]
 
   @@map("offices")
+}
+
+model OfficeChange {
+  id        String    @id @default(uuid()) @db.Uuid
+  officeId  String    @map("office_id") @db.Uuid
+  property  String
+  valueText String?   @map("value_text")
+  valueDate DateTime? @map("value_date") @db.Date
+  changedBy String?   @map("changed_by") @db.Uuid
+  changedAt DateTime  @default(now()) @map("changed_at") @db.Timestamptz
+
+  office         Office @relation(fields: [officeId], references: [id], onDelete: Cascade)
+  changedByStaff Staff? @relation("OfficeChangedByStaff", fields: [changedBy], references: [id])
+
+  @@index([officeId, property, changedAt(sort: Desc)])
+  @@map("office_changes")
 }
 
 model Team {
@@ -67,8 +84,25 @@ model Team {
   updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz
 
   members TeamMember[]
+  changes TeamChange[]
 
   @@map("teams")
+}
+
+model TeamChange {
+  id        String    @id @default(uuid()) @db.Uuid
+  teamId    String    @map("team_id") @db.Uuid
+  property  String
+  valueText String?   @map("value_text")
+  valueDate DateTime? @map("value_date") @db.Date
+  changedBy String?   @map("changed_by") @db.Uuid
+  changedAt DateTime  @default(now()) @map("changed_at") @db.Timestamptz
+
+  team           Team   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  changedByStaff Staff? @relation("TeamChangedByStaff", fields: [changedBy], references: [id])
+
+  @@index([teamId, property, changedAt(sort: Desc)])
+  @@map("team_changes")
 }
 
 model TeamMember {
@@ -106,6 +140,8 @@ model Staff {
   accountChanges   AccountChange[]  @relation("AccountChangedByStaff")
   campaignsCreated Campaign[]       @relation("CampaignCreatedByStaff")
   campaignChanges  CampaignChange[] @relation("CampaignChangedByStaff")
+  officeChanges    OfficeChange[]   @relation("OfficeChangedByStaff")
+  teamChanges      TeamChange[]     @relation("TeamChangedByStaff")
   auditActions     AuditLog[]       @relation("AuditLogActorStaff")
   grantsGiven      AccessGrant[]    @relation("AccessGrantGrantedByStaff")
   grantsRevoked    AccessGrant[]    @relation("AccessGrantRevokedByStaff")
