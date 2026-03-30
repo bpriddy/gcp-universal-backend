@@ -29,7 +29,8 @@ gcloud services enable \
   run.googleapis.com \
   cloudbuild.googleapis.com \
   artifactregistry.googleapis.com \
-  secretmanager.googleapis.com
+  secretmanager.googleapis.com \
+  sqladmin.googleapis.com
 
 # ── Artifact Registry repository ─────────────────────────────────────────────
 echo "→ Creating Artifact Registry repository: $AR_REPO..."
@@ -60,7 +61,8 @@ for ENV in "${ENVS[@]}"; do
     roles/secretmanager.secretAccessor \
     roles/cloudtrace.agent \
     roles/logging.logWriter \
-    roles/monitoring.metricWriter; do
+    roles/monitoring.metricWriter \
+    roles/cloudsql.client; do
     gcloud projects add-iam-policy-binding "$PROJECT_ID" \
       --member="serviceAccount:$SA_EMAIL" \
       --role="$ROLE" \
@@ -92,7 +94,8 @@ for ROLE in \
   roles/run.admin \
   roles/iam.serviceAccountUser \
   roles/artifactregistry.writer \
-  roles/secretmanager.secretAccessor; do
+  roles/secretmanager.secretAccessor \
+  roles/cloudsql.client; do
   gcloud projects add-iam-policy-binding "$PROJECT_ID" \
     --member="serviceAccount:$CB_SA" \
     --role="$ROLE" \
@@ -128,8 +131,10 @@ echo "  Setup complete."
 echo ""
 echo "  Next steps:"
 echo ""
-echo "  1. Populate Secret Manager secrets for each environment:"
-echo "     gcloud secrets versions add <secret-name> --data-file=-"
+echo "  1. Provision Cloud SQL (run once after this script):"
+echo "     ./scripts/setup-cloud-sql.sh $PROJECT_ID $REGION"
+echo "     (Creates the instance, databases, users, and writes DATABASE_URLs"
+echo "      to Secret Manager automatically.)"
 echo ""
 echo "  2. Connect your GitHub repo to Cloud Build at:"
 echo "     https://console.cloud.google.com/cloud-build/triggers/connect"
@@ -139,5 +144,8 @@ echo "     ./scripts/generate-keys.sh"
 echo "     base64 -i keys/private.pem | tr -d '\\n' | \\"
 echo "       gcloud secrets versions add <env>-jwt-private-key-b64 --data-file=-"
 echo ""
-echo "  4. Push to dev/staging/main to trigger the first deploy."
+echo "  4. Populate remaining secrets (google-client-id, app-db-connections):"
+echo "     gcloud secrets versions add <secret-name> --data-file=-"
+echo ""
+echo "  5. Push to dev/staging/main to trigger the first deploy."
 echo "========================================================================="

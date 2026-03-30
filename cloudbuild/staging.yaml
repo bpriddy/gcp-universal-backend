@@ -14,6 +14,7 @@ substitutions:
   _GOOGLE_CLIENT_ID_SECRET: staging-google-client-id
   _JWT_PRIV_SECRET: staging-jwt-private-key-b64
   _JWT_PUB_SECRET: staging-jwt-public-key-b64
+  _CLOUDSQL_INSTANCE: gub-platform
 
 options:
   logging: CLOUD_LOGGING_ONLY
@@ -64,6 +65,7 @@ steps:
       - --args=prisma,migrate,deploy
       - --set-secrets=DATABASE_URL=$_DB_SECRET:latest
       - --service-account=sa-$_SERVICE@$PROJECT_ID.iam.gserviceaccount.com
+      - --add-cloudsql-instances=$PROJECT_ID:$_REGION:$_CLOUDSQL_INSTANCE
     waitFor: [push]
 
   # ── 5. Run migrations ─────────────────────────────────────────────────────
@@ -103,4 +105,5 @@ steps:
       - --set-secrets=GOOGLE_CLIENT_ID=$_GOOGLE_CLIENT_ID_SECRET:latest
       - --set-secrets=JWT_PRIVATE_KEY_B64=$_JWT_PRIV_SECRET:latest
       - --set-secrets=JWT_PUBLIC_KEY_B64=$_JWT_PUB_SECRET:latest
+      - --add-cloudsql-instances=$PROJECT_ID:$_REGION:$_CLOUDSQL_INSTANCE
     waitFor: [migrate]
