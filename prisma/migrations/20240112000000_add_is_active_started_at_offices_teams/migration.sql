@@ -1,0 +1,7 @@
+ALTER TABLE offices
+  ADD COLUMN is_active  BOOLEAN NOT NULL DEFAULT true,
+  ADD COLUMN started_at DATE;
+
+ALTER TABLE teams
+  ADD COLUMN is_active  BOOLEAN NOT NULL DEFAULT true,
+  ADD COLUMN started_at DATE;
