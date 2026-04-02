@@ -1,3 +1,5 @@
+import { z } from 'zod';
+import { Prisma } from '@prisma/client';
 import { prisma } from '../../config/database';
 import { checkAccess, getGrantedResourceIds, getTemporalCutoff } from './access.service';
 import { AccessDeniedError } from './org.types';
@@ -357,4 +359,459 @@ function staffToResponse(s: {
     startedAt: s.startedAt,
     endedAt: s.endedAt,
   };
+}
+
+// ── Access requests ────────────────────────────────────────────────────────
+
+export const CreateAccessRequestSchema = z.object({
+  // Same domain as AccessGrant.resourceType
+  resourceType: z.string().min(1),
+  // Null for functional / scope grants (func:*, staff:*)
+  resourceId: z.string().uuid().nullable().optional(),
+  // Role or capability level being requested
+  requestedRole: z.string().min(1),
+  // Free-text reason from the requester
+  reason: z.string().max(2000).nullable().optional(),
+});
+
+export type CreateAccessRequestInput = z.infer<typeof CreateAccessRequestSchema>;
+
+export interface AccessRequestResponse {
+  id: string;
+  userId: string;
+  resourceType: string;
+  resourceId: string | null;
+  requestedRole: string;
+  reason: string | null;
+  status: string;
+  reviewedAt: Date | null;
+  reviewNote: string | null;
+  grantId: string | null;
+  createdAt: Date;
+}
+
+/**
+ * Submit an access request. Any authenticated user can call this.
+ * Duplicate detection: if the user already has a pending request for the
+ * same resource + role, we return the existing one rather than creating
+ * a duplicate.
+ */
+export async function createAccessRequest(
+  userId: string,
+  input: CreateAccessRequestInput,
+): Promise<AccessRequestResponse> {
+  const existing = await prisma.accessRequest.findFirst({
+    where: {
+      userId,
+      resourceType: input.resourceType,
+      resourceId: input.resourceId ?? null,
+      requestedRole: input.requestedRole,
+      status: 'pending',
+    },
+  });
+
+  if (existing) return toAccessRequestResponse(existing);
+
+  const request = await prisma.accessRequest.create({
+    data: {
+      userId,
+      resourceType: input.resourceType,
+      resourceId: input.resourceId ?? null,
+      requestedRole: input.requestedRole,
+      reason: input.reason ?? null,
+    },
+  });
+
+  return toAccessRequestResponse(request);
+}
+
+/**
+ * List all access requests for the calling user.
+ * Most recent first.
+ */
+export async function listMyAccessRequests(
+  userId: string,
+): Promise<AccessRequestResponse[]> {
+  const requests = await prisma.accessRequest.findMany({
+    where: { userId },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  return requests.map(toAccessRequestResponse);
+}
+
+function toAccessRequestResponse(r: {
+  id: string;
+  userId: string;
+  resourceType: string;
+  resourceId: string | null;
+  requestedRole: string;
+  reason: string | null;
+  status: string;
+  reviewedAt: Date | null;
+  reviewNote: string | null;
+  grantId: string | null;
+  createdAt: Date;
+}): AccessRequestResponse {
+  return {
+    id: r.id,
+    userId: r.userId,
+    resourceType: r.resourceType,
+    resourceId: r.resourceId,
+    requestedRole: r.requestedRole,
+    reason: r.reason,
+    status: r.status,
+    reviewedAt: r.reviewedAt,
+    reviewNote: r.reviewNote,
+    grantId: r.grantId,
+    createdAt: r.createdAt,
+  };
+}
+
+// ── App access requests ────────────────────────────────────────────────────
+// These are app-level gate requests (distinct from resource-level AccessRequest).
+// A user who hits a gated app with no UserAppPermission submits one of these.
+
+export const CreateAppAccessRequestSchema = z.object({
+  appId: z.string().min(1),
+  reason: z.string().max(2000).nullable().optional(),
+});
+
+export type CreateAppAccessRequestInput = z.infer<typeof CreateAppAccessRequestSchema>;
+
+export interface AppAccessRequestResponse {
+  id: string;
+  userId: string;
+  appId: string;
+  reason: string | null;
+  status: string;
+  reviewedAt: Date | null;
+  reviewNote: string | null;
+  createdAt: Date;
+}
+
+/**
+ * Submit an app access request.
+ * Idempotent: returns existing pending request if one already exists.
+ * Rejects if user already has an approved permission for the app.
+ */
+export async function createAppAccessRequest(
+  userId: string,
+  input: CreateAppAccessRequestInput,
+): Promise<AppAccessRequestResponse> {
+  // Check if user already has access
+  const existing = await prisma.userAppPermission.findUnique({
+    where: { userId_appId: { userId, appId: input.appId } },
+  });
+  if (existing) {
+    throw Object.assign(new Error('You already have access to this app'), { code: 'ALREADY_GRANTED', status: 409 });
+  }
+
+  // Idempotency — return existing pending request if present
+  const pending = await prisma.appAccessRequest.findFirst({
+    where: { userId, appId: input.appId, status: 'pending' },
+  });
+  if (pending) return toAppAccessRequestResponse(pending);
+
+  const request = await prisma.appAccessRequest.create({
+    data: {
+      userId,
+      appId: input.appId,
+      reason: input.reason ?? null,
+    },
+  });
+
+  return toAppAccessRequestResponse(request);
+}
+
+/**
+ * List all app access requests for the calling user (most recent first).
+ */
+export async function listMyAppAccessRequests(
+  userId: string,
+): Promise<AppAccessRequestResponse[]> {
+  const requests = await prisma.appAccessRequest.findMany({
+    where: { userId },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  return requests.map(toAppAccessRequestResponse);
+}
+
+function toAppAccessRequestResponse(r: {
+  id: string;
+  userId: string;
+  appId: string;
+  reason: string | null;
+  status: string;
+  reviewedAt: Date | null;
+  reviewNote: string | null;
+  createdAt: Date;
+}): AppAccessRequestResponse {
+  return {
+    id: r.id,
+    userId: r.userId,
+    appId: r.appId,
+    reason: r.reason,
+    status: r.status,
+    reviewedAt: r.reviewedAt,
+    reviewNote: r.reviewNote,
+    createdAt: r.createdAt,
+  };
+}
+
+// ── Staff metadata ─────────────────────────────────────────────────────────
+// Flexible per-staff traits: skills, interests, work highlights, etc.
+// type is a free string; valid types are documented convention, not DB enum.
+// source/provenance is intentionally omitted — inferrable from audit_log.
+
+export const CreateStaffMetadataSchema = z.object({
+  type:       z.string().min(1).max(64),
+  label:      z.string().min(1).max(256),
+  value:      z.string().max(256).nullable().optional(),
+  notes:      z.string().max(4000).nullable().optional(),
+  metadata:   z.record(z.unknown()).nullable().optional(),
+  isFeatured: z.boolean().optional(),
+});
+
+export const UpdateStaffMetadataSchema = CreateStaffMetadataSchema.partial();
+
+export type CreateStaffMetadataInput = z.infer<typeof CreateStaffMetadataSchema>;
+export type UpdateStaffMetadataInput = z.infer<typeof UpdateStaffMetadataSchema>;
+
+export interface StaffMetadataResponse {
+  id:         string;
+  staffId:    string;
+  type:       string;
+  label:      string;
+  value:      string | null;
+  notes:      string | null;
+  metadata:   Record<string, unknown> | null;
+  isFeatured: boolean;
+  createdAt:  Date;
+  updatedAt:  Date;
+}
+
+function toMetadataResponse(r: {
+  id: string;
+  staffId: string;
+  type: string;
+  label: string;
+  value: string | null;
+  notes: string | null;
+  metadata: unknown;
+  isFeatured: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}): StaffMetadataResponse {
+  return {
+    id:         r.id,
+    staffId:    r.staffId,
+    type:       r.type,
+    label:      r.label,
+    value:      r.value,
+    notes:      r.notes,
+    metadata:   (r.metadata as Record<string, unknown> | null) ?? null,
+    isFeatured: r.isFeatured,
+    createdAt:  r.createdAt,
+    updatedAt:  r.updatedAt,
+  };
+}
+
+/**
+ * List all metadata for a staff member, optionally filtered by type.
+ */
+export async function listStaffMetadata(
+  staffId: string,
+  type?: string,
+): Promise<StaffMetadataResponse[]> {
+  const rows = await prisma.staffMetadata.findMany({
+    where: { staffId, ...(type ? { type } : {}) },
+    orderBy: [{ type: 'asc' }, { label: 'asc' }],
+  });
+  return rows.map(toMetadataResponse);
+}
+
+/**
+ * Resolve a Staff ID from a User ID for audit log writes.
+ * Returns null if the user has no linked staff record (non-staff admin).
+ */
+async function resolveActorStaffId(userId: string): Promise<string | null> {
+  const staff = await prisma.staff.findFirst({ where: { userId }, select: { id: true } });
+  return staff?.id ?? null;
+}
+
+/**
+ * Create a metadata entry for a staff member.
+ * Writes an audit_log entry crediting the acting user (if they have a staff record).
+ */
+export async function createStaffMetadata(
+  staffId: string,
+  input: CreateStaffMetadataInput,
+  actorUserId: string,
+): Promise<StaffMetadataResponse> {
+  const actorStaffId = await resolveActorStaffId(actorUserId);
+
+  const row = await prisma.$transaction(async (tx) => {
+    const created = await tx.staffMetadata.create({
+      data: {
+        staffId,
+        type:       input.type,
+        label:      input.label,
+        value:      input.value ?? null,
+        notes:      input.notes ?? null,
+        isFeatured: input.isFeatured ?? false,
+        ...(input.metadata != null ? { metadata: input.metadata } : {}),
+      },
+    });
+
+    if (actorStaffId) {
+      await tx.auditLog.create({
+        data: {
+          actorId:    actorStaffId,
+          action:     'staff_metadata_created',
+          entityType: 'staff_metadata',
+          entityId:   created.id,
+          after: { staffId, type: input.type, label: input.label, value: input.value ?? null } as object,
+        },
+      });
+    }
+
+    return created;
+  });
+
+  return toMetadataResponse(row);
+}
+
+/**
+ * Update a metadata entry. Only the owner staff or an admin should call this.
+ */
+export async function updateStaffMetadata(
+  id: string,
+  staffId: string,
+  input: UpdateStaffMetadataInput,
+  actorUserId: string,
+): Promise<StaffMetadataResponse | null> {
+  const existing = await prisma.staffMetadata.findFirst({ where: { id, staffId } });
+  if (!existing) return null;
+
+  const actorStaffId = await resolveActorStaffId(actorUserId);
+
+  const row = await prisma.$transaction(async (tx) => {
+    const updated = await tx.staffMetadata.update({
+      where: { id },
+      data: {
+        ...(input.type       !== undefined ? { type: input.type }           : {}),
+        ...(input.label      !== undefined ? { label: input.label }         : {}),
+        ...(input.value      !== undefined ? { value: input.value ?? null } : {}),
+        ...(input.notes      !== undefined ? { notes: input.notes ?? null } : {}),
+        ...(input.isFeatured !== undefined ? { isFeatured: input.isFeatured } : {}),
+        ...(input.metadata   !== undefined
+          ? { metadata: input.metadata != null ? input.metadata : Prisma.JsonNull }
+          : {}),
+      },
+    });
+
+    if (actorStaffId) {
+      await tx.auditLog.create({
+        data: {
+          actorId:    actorStaffId,
+          action:     'staff_metadata_updated',
+          entityType: 'staff_metadata',
+          entityId:   id,
+          before: { type: existing.type, label: existing.label, value: existing.value } as object,
+          after:  { type: updated.type,  label: updated.label,  value: updated.value  } as object,
+        },
+      });
+    }
+
+    return updated;
+  });
+
+  return toMetadataResponse(row);
+}
+
+/**
+ * Delete a metadata entry. Hard delete is intentional — this is not
+ * compliance-sensitive data, and the audit_log records the deletion.
+ */
+export async function deleteStaffMetadata(
+  id: string,
+  staffId: string,
+  actorUserId: string,
+): Promise<boolean> {
+  const existing = await prisma.staffMetadata.findFirst({ where: { id, staffId } });
+  if (!existing) return false;
+
+  const actorStaffId = await resolveActorStaffId(actorUserId);
+
+  await prisma.$transaction(async (tx) => {
+    await tx.staffMetadata.delete({ where: { id } });
+
+    if (actorStaffId) {
+      await tx.auditLog.create({
+        data: {
+          actorId:    actorStaffId,
+          action:     'staff_metadata_deleted',
+          entityType: 'staff_metadata',
+          entityId:   id,
+          before: { type: existing.type, label: existing.label, value: existing.value } as object,
+        },
+      });
+    }
+  });
+
+  return true;
+}
+
+/**
+ * Cross-staff resourcing search.
+ * Find all staff who have a metadata entry matching type + optional filters.
+ * Returns staff with their matching metadata rows.
+ */
+export interface ResourcingResult {
+  staffId:   string;
+  fullName:  string;
+  email:     string;
+  title:     string | null;
+  status:    string;
+  entries:   StaffMetadataResponse[];
+}
+
+export async function searchByMetadata(params: {
+  type:        string;
+  label?:      string;   // partial match
+  value?:      string;   // exact match (e.g. 'expert')
+  isFeatured?: boolean;
+}): Promise<ResourcingResult[]> {
+  const rows = await prisma.staffMetadata.findMany({
+    where: {
+      type: params.type,
+      ...(params.label      ? { label: { contains: params.label, mode: 'insensitive' } } : {}),
+      ...(params.value      ? { value: params.value }      : {}),
+      ...(params.isFeatured !== undefined ? { isFeatured: params.isFeatured } : {}),
+    },
+    include: {
+      staff: { select: { id: true, fullName: true, email: true, title: true, status: true } },
+    },
+    orderBy: [{ staff: { fullName: 'asc' } }, { label: 'asc' }],
+  });
+
+  // Group by staff member
+  const byStaff = new Map<string, ResourcingResult>();
+  for (const row of rows) {
+    if (!byStaff.has(row.staffId)) {
+      byStaff.set(row.staffId, {
+        staffId:  row.staff.id,
+        fullName: row.staff.fullName,
+        email:    row.staff.email,
+        title:    row.staff.title,
+        status:   row.staff.status,
+        entries:  [],
+      });
+    }
+    byStaff.get(row.staffId)!.entries.push(toMetadataResponse(row));
+  }
+
+  return Array.from(byStaff.values());
 }

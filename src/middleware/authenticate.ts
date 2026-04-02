@@ -1,6 +1,5 @@
 import type { Request, Response, NextFunction } from 'express';
 import { verifyAccessToken } from '../services/jwt.service';
-import { getAppDbPool } from '../config/database';
 
 /**
  * JWT Bearer token authentication middleware.
@@ -38,6 +37,22 @@ export async function authenticate(
 }
 
 /**
+ * Middleware that requires the authenticated user to have isAdmin = true.
+ * Must be used after the `authenticate` middleware.
+ */
+export function requireAdmin(req: Request, res: Response, next: NextFunction): void {
+  if (!req.user) {
+    res.status(401).json({ code: 'UNAUTHORIZED', message: 'Not authenticated' });
+    return;
+  }
+  if (!req.user.isAdmin) {
+    res.status(403).json({ code: 'FORBIDDEN', message: 'Admin access required' });
+    return;
+  }
+  next();
+}
+
+/**
  * Per-route middleware factory that checks the authenticated user has
  * permission for a specific appId and attaches the corresponding DB pool.
  *
@@ -60,17 +75,8 @@ export function requireAppAccess(appId: string) {
       return;
     }
 
-    const pool = getAppDbPool(permission.dbIdentifier);
-
-    if (!pool) {
-      res.status(503).json({
-        code: 'DB_UNAVAILABLE',
-        message: `Database pool for '${permission.dbIdentifier}' is not configured`,
-      });
-      return;
-    }
-
-    req.appDbPool = pool;
+    // dbIdentifier-based pool routing is resolved from the App table at deploy
+    // time for isolated-tenant apps.  No routing needed for standard apps.
     req.appId = appId;
     next();
   };

@@ -1,8 +1,14 @@
 import { useAuth } from './auth/useAuth';
 import { LoginPage } from './components/LoginPage';
 import { Dashboard } from './components/Dashboard';
+import { BrokerTestPage } from './components/BrokerTestPage';
 
 export default function App() {
+  // Dev-only: broker test page lives at /broker-test
+  if (window.location.pathname === '/broker-test') {
+    return <BrokerTestPage />;
+  }
+
   const auth = useAuth();
 
   if (auth.status === 'loading') {

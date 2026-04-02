@@ -11,6 +11,8 @@ import { logger } from './services/logger';
 import authRouter from './modules/auth/auth.router';
 import healthRouter from './modules/health/health.router';
 import orgRouter from './modules/org/org.router';
+import oktaRouter from './modules/integrations/okta/okta.router';
+import devRouter from './modules/dev/dev.router';
 import { getJwks as getJwksHandler } from './modules/auth/auth.controller';
 
 export function createApp(): express.Application {
@@ -54,6 +56,8 @@ export function createApp(): express.Application {
 
   // ── Body parsing ──────────────────────────────────────────────────────────
   app.use(express.json({ limit: '10kb' }));
+  // OAuth token endpoint accepts application/x-www-form-urlencoded (RFC 6749 §4.1.3)
+  app.use(express.urlencoded({ extended: false, limit: '4kb' }));
 
   // ── Global rate limiter ───────────────────────────────────────────────────
   app.use(generalLimiter);
@@ -62,9 +66,34 @@ export function createApp(): express.Application {
   app.use('/health', healthRouter);
   app.use('/auth', authLimiter, authRouter);
   app.use('/org', orgRouter);
+  app.use('/integrations/okta', oktaRouter);
+
+  // Dev-only routes — never available in production
+  if (!config.isProduction) {
+    app.use('/dev', devRouter);
+    logger.info('Dev routes mounted at /dev (non-production only)');
+  }
 
   // Standard JWKS discovery endpoint — consumed by downstream backend SDKs
   app.get('/.well-known/jwks.json', getJwksHandler);
+
+  // OAuth 2.0 Authorization Server Metadata (RFC 8414)
+  // Agentspace / OAuth clients can auto-discover endpoints from this URL.
+  app.get('/.well-known/oauth-authorization-server', (_req, res) => {
+    const base = config.JWT_ISSUER.replace(/\/$/, '');
+    res.json({
+      issuer: base,
+      authorization_endpoint: `${base}/auth/google/broker/authorize`,
+      token_endpoint: `${base}/auth/google/broker/token`,
+      jwks_uri: `${base}/.well-known/jwks.json`,
+      response_types_supported: ['code'],
+      grant_types_supported: ['authorization_code'],
+      token_endpoint_auth_methods_supported: ['client_secret_post'],
+      scopes_supported: ['openid', 'email', 'profile'],
+      subject_types_supported: ['public'],
+      id_token_signing_alg_values_supported: ['RS256'],
+    });
+  });
 
   // ── 404 handler ───────────────────────────────────────────────────────────
   app.use((_req, res) => {

@@ -85,7 +85,7 @@ let _refreshToken: string | null = null;
 // ── Google Identity Services ───────────────────────────────────────────────
 // Loaded once via script injection — no @react-oauth/google dependency.
 // The GIS credential response contains an ID token (not an access token),
-// which is exactly what GUB's POST /auth/google expects.
+// which is exactly what GUB's POST /auth/google/exchange expects.
 
 declare global {
   interface Window {
@@ -204,7 +204,7 @@ export function GUBProvider({ config, children }: GUBProviderProps) {
     async (credential: string) => {
       setIsLoading(true);
       try {
-        const res = await window.fetch(`${baseUrl}/auth/google`, {
+        const res = await window.fetch(`${baseUrl}/auth/google/exchange`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           // GUB expects idToken — the GIS credential IS an ID token

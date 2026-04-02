@@ -50,9 +50,9 @@ async function handleResponse<T>(res: Response): Promise<T> {
   throw new AuthApiError(body.code, body.message, res.status);
 }
 
-/** Exchange a Google ID token for our JWT access + refresh tokens. */
+/** Exchange a client-obtained Google ID token for GUB access + refresh tokens. */
 export async function loginWithGoogle(idToken: string): Promise<AuthResponse> {
-  const res = await fetch(`${BASE_URL}/auth/google`, {
+  const res = await fetch(`${BASE_URL}/auth/google/exchange`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ idToken }),

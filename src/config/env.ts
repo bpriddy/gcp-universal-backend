@@ -50,6 +50,26 @@ const EnvSchema = z.object({
   AUTH_RATE_LIMIT_MAX: z.string().default('10').transform(Number),
 
   GCP_PROJECT_ID: z.string().optional(),
+
+  // ── Okta integration ───────────────────────────────────────────────────────
+  // OKTA_ORG_URL: full Okta org base URL, e.g. https://yourorg.okta.com
+  // OKTA_API_TOKEN: a service account API token (read-only scopes sufficient)
+  OKTA_ORG_URL: z.string().url().optional(),
+  OKTA_API_TOKEN: z.string().optional(),
+
+  // ── OAuth Broker ───────────────────────────────────────────────────────────
+  // Used only by the headless server-side OAuth flow (e.g. Agentspace MCP).
+  // GOOGLE_CLIENT_SECRET: the OAuth 2.0 client secret paired with GOOGLE_CLIENT_ID
+  // GOOGLE_BROKER_REDIRECT_URI: the /auth/google/broker/callback URL GUB is registered as
+  GOOGLE_CLIENT_SECRET: z.string().optional(),
+  GOOGLE_BROKER_REDIRECT_URI: z.string().url().optional(),
+
+  // ── Broker dev test ────────────────────────────────────────────────────────
+  // Used only by POST /dev/broker-test/exchange (never mounted in production).
+  // Set to the client_id + secret of a registered OAuth client for the test UI.
+  BROKER_TEST_CLIENT_ID: z.string().optional(),
+  BROKER_TEST_CLIENT_SECRET: z.string().optional(),
+  BROKER_TEST_REDIRECT_URI: z.string().url().optional(),
 });
 
 function loadKeyMaterial(

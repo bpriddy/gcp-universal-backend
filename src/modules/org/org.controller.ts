@@ -159,3 +159,181 @@ export async function getStaffMember(
     handleError(err, res, next);
   }
 }
+
+// ── Access requests ────────────────────────────────────────────────────────
+
+export async function createAccessRequest(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const { userId } = identity(req);
+    const parsed = orgService.CreateAccessRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ code: 'VALIDATION_ERROR', error: parsed.error.flatten() });
+      return;
+    }
+    const request = await orgService.createAccessRequest(userId, parsed.data);
+    res.status(201).json(request);
+  } catch (err) {
+    handleError(err, res, next);
+  }
+}
+
+export async function listMyAccessRequests(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const { userId } = identity(req);
+    const requests = await orgService.listMyAccessRequests(userId);
+    res.status(200).json(requests);
+  } catch (err) {
+    handleError(err, res, next);
+  }
+}
+
+// ── App access requests ────────────────────────────────────────────────────
+
+export async function createAppAccessRequest(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const { userId } = identity(req);
+    const parsed = orgService.CreateAppAccessRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ code: 'VALIDATION_ERROR', error: parsed.error.flatten() });
+      return;
+    }
+    const request = await orgService.createAppAccessRequest(userId, parsed.data);
+    res.status(201).json(request);
+  } catch (err) {
+    // Surface the already-granted 409 cleanly
+    const e = err as { code?: string; status?: number; message?: string };
+    if (e.code === 'ALREADY_GRANTED') {
+      res.status(409).json({ code: 'ALREADY_GRANTED', message: e.message });
+      return;
+    }
+    handleError(err, res, next);
+  }
+}
+
+export async function listMyAppAccessRequests(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const { userId } = identity(req);
+    const requests = await orgService.listMyAppAccessRequests(userId);
+    res.status(200).json(requests);
+  } catch (err) {
+    handleError(err, res, next);
+  }
+}
+
+// ── Staff metadata ─────────────────────────────────────────────────────────
+
+export async function listStaffMetadata(
+  req: Request<{ staffId: string }>,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const type = typeof req.query['type'] === 'string' ? req.query['type'] : undefined;
+    const rows = await orgService.listStaffMetadata(req.params.staffId, type);
+    res.status(200).json(rows);
+  } catch (err) {
+    handleError(err, res, next);
+  }
+}
+
+export async function createStaffMetadata(
+  req: Request<{ staffId: string }>,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const { userId } = identity(req);
+    const parsed = orgService.CreateStaffMetadataSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ code: 'VALIDATION_ERROR', error: parsed.error.flatten() });
+      return;
+    }
+    const row = await orgService.createStaffMetadata(req.params.staffId, parsed.data, userId);
+    res.status(201).json(row);
+  } catch (err) {
+    handleError(err, res, next);
+  }
+}
+
+export async function updateStaffMetadata(
+  req: Request<{ staffId: string; id: string }>,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const { userId } = identity(req);
+    const parsed = orgService.UpdateStaffMetadataSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ code: 'VALIDATION_ERROR', error: parsed.error.flatten() });
+      return;
+    }
+    const row = await orgService.updateStaffMetadata(req.params.id, req.params.staffId, parsed.data, userId);
+    if (!row) {
+      res.status(404).json({ code: 'NOT_FOUND', message: 'Metadata entry not found' });
+      return;
+    }
+    res.status(200).json(row);
+  } catch (err) {
+    handleError(err, res, next);
+  }
+}
+
+export async function deleteStaffMetadata(
+  req: Request<{ staffId: string; id: string }>,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const { userId } = identity(req);
+    const deleted = await orgService.deleteStaffMetadata(req.params.id, req.params.staffId, userId);
+    if (!deleted) {
+      res.status(404).json({ code: 'NOT_FOUND', message: 'Metadata entry not found' });
+      return;
+    }
+    res.status(204).send();
+  } catch (err) {
+    handleError(err, res, next);
+  }
+}
+
+export async function searchByMetadata(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const type = typeof req.query['type'] === 'string' ? req.query['type'] : undefined;
+    if (!type) {
+      res.status(400).json({ code: 'VALIDATION_ERROR', message: '?type= is required' });
+      return;
+    }
+    const label      = typeof req.query['label'] === 'string' ? req.query['label'] : undefined;
+    const value      = typeof req.query['value'] === 'string' ? req.query['value'] : undefined;
+    const isFeatured = req.query['featured'] === 'true' ? true : req.query['featured'] === 'false' ? false : undefined;
+    const results = await orgService.searchByMetadata({
+      type,
+      ...(label      !== undefined ? { label }      : {}),
+      ...(value      !== undefined ? { value }      : {}),
+      ...(isFeatured !== undefined ? { isFeatured } : {}),
+    });
+    res.status(200).json(results);
+  } catch (err) {
+    handleError(err, res, next);
+  }
+}

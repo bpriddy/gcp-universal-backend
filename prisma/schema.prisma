@@ -15,7 +15,7 @@ generator client {
 model User {
   id          String   @id @default(uuid()) @db.Uuid
   email       String   @unique
-  googleSub   String   @unique @map("google_sub")
+  googleSub   String?  @unique @map("google_sub")
   displayName String?  @map("display_name")
   avatarUrl   String?  @map("avatar_url")
   role        String   @default("viewer")
@@ -24,12 +24,15 @@ model User {
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz
 
-  permissions   UserAppPermission[]
-  refreshTokens RefreshToken[]
-  grantedPerms  UserAppPermission[] @relation("GrantedByUser")
-  externalIds   UserExternalId[]
-  staffProfile  Staff?
-  accessGrants  AccessGrant[]
+  permissions        UserAppPermission[]
+  refreshTokens      RefreshToken[]
+  grantedPerms       UserAppPermission[] @relation("GrantedByUser")
+  externalIds        UserExternalId[]
+  staffProfile       Staff?
+  accessGrants       AccessGrant[]
+  accessRequests     AccessRequest[]
+  appAccessRequests  AppAccessRequest[]
+  oauthAuthCodes     OAuthAuthCode[]
 
   @@map("users")
 }
@@ -47,6 +50,7 @@ model User {
 model Office {
   id        String    @id @default(uuid()) @db.Uuid
   name      String    @unique
+  oktaCity  String?   @unique @map("okta_city")
   isActive  Boolean   @default(true) @map("is_active")
   startedAt DateTime? @map("started_at") @db.Date
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
@@ -137,19 +141,42 @@ model Staff {
   office           Office?         @relation(fields: [officeId], references: [id], onDelete: SetNull)
   teamMemberships  TeamMember[]
   externalIds      StaffExternalId[]
+  changes          StaffChange[]
   accountChanges   AccountChange[]  @relation("AccountChangedByStaff")
   campaignsCreated Campaign[]       @relation("CampaignCreatedByStaff")
   campaignChanges  CampaignChange[] @relation("CampaignChangedByStaff")
   officeChanges    OfficeChange[]   @relation("OfficeChangedByStaff")
   teamChanges      TeamChange[]     @relation("TeamChangedByStaff")
-  auditActions     AuditLog[]       @relation("AuditLogActorStaff")
-  grantsGiven      AccessGrant[]    @relation("AccessGrantGrantedByStaff")
-  grantsRevoked    AccessGrant[]    @relation("AccessGrantRevokedByStaff")
+  auditActions        AuditLog[]         @relation("AuditLogActorStaff")
+  grantsGiven         AccessGrant[]      @relation("AccessGrantGrantedByStaff")
+  grantsRevoked       AccessGrant[]      @relation("AccessGrantRevokedByStaff")
+  reviewedRequests    AccessRequest[]    @relation("AccessRequestReviewedByStaff")
+  reviewedAppRequests AppAccessRequest[] @relation("AppAccessRequestReviewedByStaff")
+  metadata            StaffMetadata[]
 
   @@index([userId])
   @@index([officeId])
   @@index([status])
   @@map("staff")
+}
+
+// Append-only change log for staff — same pattern as account_changes / office_changes.
+// source: 'okta_sync' | 'okta_webhook' | 'admin' (how the change arrived)
+model StaffChange {
+  id          String    @id @default(uuid()) @db.Uuid
+  staffId     String    @map("staff_id") @db.Uuid
+  property    String
+  valueText   String?   @map("value_text")
+  valueUuid   String?   @map("value_uuid") @db.Uuid
+  valueDate   DateTime? @map("value_date") @db.Date
+  valueIsPii  Boolean   @default(false) @map("value_is_pii")
+  source      String    @default("admin")
+  changedAt   DateTime  @default(now()) @map("changed_at") @db.Timestamptz
+
+  staff Staff @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  @@index([staffId, property, changedAt(sort: Desc)])
+  @@map("staff_changes")
 }
 
 model StaffExternalId {
@@ -305,6 +332,43 @@ model AccessGrant {
   @@map("access_grants")
 }
 
+// ── Access requests ────────────────────────────────────────────────────────
+// Users submit a request when they believe they should have access to a
+// resource or functional capability they can't currently see.
+// Admins review the queue in gub-admin and approve (which creates a grant)
+// or deny (with an optional note).
+
+model AccessRequest {
+  id                String    @id @default(uuid()) @db.Uuid
+  userId            String    @map("user_id") @db.Uuid
+  // Same domain as AccessGrant.resourceType: account | campaign | office | team
+  // | func:temporal | func:export | func:admin_ui | staff:all | staff:current | etc.
+  resourceType      String    @map("resource_type")
+  // Specific resource UUID — null for functional / scope grants (func:*, staff:*)
+  resourceId        String?   @map("resource_id") @db.Uuid
+  // Role or capability level being requested (viewer / contributor / rolling_1yr / etc.)
+  requestedRole     String    @map("requested_role")
+  // Optional free-text from the requester explaining why they need access
+  reason            String?
+  // pending | approved | denied
+  status            String    @default("pending")
+  reviewedByStaffId String?   @map("reviewed_by_staff_id") @db.Uuid
+  reviewedAt        DateTime? @map("reviewed_at") @db.Timestamptz
+  // Optional note from the reviewer (denial reason, approval conditions, etc.)
+  reviewNote        String?   @map("review_note")
+  // Populated on approval — points to the grant that was created
+  grantId           String?   @map("grant_id") @db.Uuid
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  user            User   @relation(fields: [userId], references: [id], onDelete: Restrict)
+  reviewedByStaff Staff? @relation("AccessRequestReviewedByStaff", fields: [reviewedByStaffId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([status])
+  @@index([resourceType, resourceId])
+  @@map("access_requests")
+}
+
 // ── Auth support tables ────────────────────────────────────────────────────
 
 model UserExternalId {
@@ -321,20 +385,58 @@ model UserExternalId {
   @@map("user_external_ids")
 }
 
+model App {
+  id            String   @id @default(uuid()) @db.Uuid
+  appId         String   @unique @map("app_id")
+  name          String
+  description   String?
+  autoAccess    Boolean  @default(false) @map("auto_access")
+  dbIdentifier  String?  @map("db_identifier")
+  isActive      Boolean  @default(true) @map("is_active")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  permissions    UserAppPermission[]
+  accessRequests AppAccessRequest[]
+
+  @@map("apps")
+}
+
 model UserAppPermission {
-  id           String   @id @default(uuid()) @db.Uuid
-  userId       String   @map("user_id") @db.Uuid
-  appId        String   @map("app_id")
-  dbIdentifier String   @map("db_identifier")
-  role         String   @default("viewer")
-  grantedAt    DateTime @default(now()) @map("granted_at") @db.Timestamptz
-  grantedById  String?  @map("granted_by") @db.Uuid
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @map("user_id") @db.Uuid
+  appId       String   @map("app_id")
+  role        String   @default("viewer")
+  grantedAt   DateTime @default(now()) @map("granted_at") @db.Timestamptz
+  grantedById String?  @map("granted_by") @db.Uuid
 
   user      User  @relation(fields: [userId], references: [id], onDelete: Cascade)
   grantedBy User? @relation("GrantedByUser", fields: [grantedById], references: [id])
+  app       App   @relation(fields: [appId], references: [appId], onDelete: Cascade)
 
   @@unique([userId, appId])
   @@map("user_app_permissions")
+}
+
+model AppAccessRequest {
+  id                String    @id @default(uuid()) @db.Uuid
+  userId            String    @map("user_id") @db.Uuid
+  appId             String    @map("app_id")
+  reason            String?
+  status            String    @default("pending")
+  reviewedByStaffId String?   @map("reviewed_by_staff_id") @db.Uuid
+  reviewedAt        DateTime? @map("reviewed_at") @db.Timestamptz
+  reviewNote        String?   @map("review_note")
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  user            User   @relation(fields: [userId], references: [id], onDelete: Restrict)
+  app             App    @relation(fields: [appId], references: [appId], onDelete: Cascade)
+  reviewedByStaff Staff? @relation("AppAccessRequestReviewedByStaff", fields: [reviewedByStaffId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([appId])
+  @@index([status])
+  @@map("app_access_requests")
 }
 
 model RefreshToken {
@@ -354,4 +456,77 @@ model RefreshToken {
   @@index([userId])
   @@index([family])
   @@map("refresh_tokens")
+}
+
+// ── OAuth Broker ───────────────────────────────────────────────────────────
+// Supports server-side OAuth flow for headless clients (e.g. Agentspace MCP).
+// GUB acts as a thin Authorization Server, proxying Google identity while
+// issuing its own JWTs.  Client-side flows (/auth/google/exchange) are
+// unaffected and do not use these tables.
+
+model OAuthClient {
+  id               String   @id @default(uuid()) @db.Uuid
+  clientId         String   @unique @map("client_id")
+  clientSecretHash String   @map("client_secret_hash")
+  name             String
+  redirectUris     String[] @map("redirect_uris")
+  isActive         Boolean  @default(true) @map("is_active")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  pendingAuths OAuthPendingAuth[]
+  authCodes    OAuthAuthCode[]
+
+  @@map("oauth_clients")
+}
+
+model OAuthPendingAuth {
+  id          String   @id @default(uuid()) @db.Uuid
+  clientId    String   @map("client_id")
+  redirectUri String   @map("redirect_uri")
+  clientState String?  @map("client_state")
+  expiresAt   DateTime @map("expires_at") @db.Timestamptz
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  client OAuthClient @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+
+  @@index([expiresAt])
+  @@map("oauth_pending_auths")
+}
+
+model OAuthAuthCode {
+  id          String    @id @default(uuid()) @db.Uuid
+  codeHash    String    @unique @map("code_hash")
+  clientId    String    @map("client_id")
+  userId      String    @map("user_id") @db.Uuid
+  redirectUri String    @map("redirect_uri")
+  expiresAt   DateTime  @map("expires_at") @db.Timestamptz
+  usedAt      DateTime? @map("used_at") @db.Timestamptz
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  client OAuthClient @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  user   User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
+  @@map("oauth_auth_codes")
+}
+
+model StaffMetadata {
+  id         String   @id @default(uuid()) @db.Uuid
+  staffId    String   @map("staff_id") @db.Uuid
+  type       String
+  label      String
+  value      String?
+  notes      String?
+  metadata   Json?
+  isFeatured Boolean  @default(false) @map("is_featured")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  staff Staff @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  @@index([staffId, type])
+  @@index([type, label])
+  @@index([type, value])
+  @@map("staff_metadata")
 }

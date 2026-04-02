@@ -1,11 +1,16 @@
 import { Router } from 'express';
 import { authenticate } from '../../middleware/authenticate';
+import { setUserContext } from '../../middleware/setUserContext';
 import * as orgController from './org.controller';
 
 const router = Router();
 
 // All org routes require a valid JWT — no public access
 router.use(authenticate);
+
+// Populate AsyncLocalStorage with the verified user identity so the Prisma
+// $extends middleware can inject app.current_user_id for RLS enforcement.
+router.use(setUserContext);
 
 // ── Accounts ───────────────────────────────────────────────────────────────
 
@@ -64,5 +69,71 @@ router.get('/staff', orgController.listStaff);
  * Fetch a single staff member by ID.
  */
 router.get('/staff/:id', orgController.getStaffMember);
+
+// ── Access requests ────────────────────────────────────────────────────────
+
+/**
+ * POST /org/access-requests
+ * Submit a new access request. Any authenticated user can call this.
+ * Body: { resourceType, resourceId?, requestedRole, reason? }
+ */
+router.post('/access-requests', orgController.createAccessRequest);
+
+/**
+ * GET /org/access-requests
+ * List the calling user's own access requests (most recent first).
+ */
+router.get('/access-requests', orgController.listMyAccessRequests);
+
+// ── App access requests ────────────────────────────────────────────────────
+
+/**
+ * POST /org/app-access-requests
+ * Submit a request to access a gated app.
+ * Body: { appId, reason? }
+ * Returns 201 with the request (or existing pending request).
+ * Returns 409 if the user already has an approved UserAppPermission.
+ */
+router.post('/app-access-requests', orgController.createAppAccessRequest);
+
+/**
+ * GET /org/app-access-requests
+ * List the calling user's own app access requests (most recent first).
+ */
+router.get('/app-access-requests', orgController.listMyAppAccessRequests);
+
+// ── Staff metadata ─────────────────────────────────────────────────────────
+
+/**
+ * GET /org/staff/:staffId/metadata
+ * List all metadata for a staff member. Optional ?type= filter.
+ */
+router.get('/staff/:staffId/metadata', orgController.listStaffMetadata);
+
+/**
+ * POST /org/staff/:staffId/metadata
+ * Create a metadata entry (skill, interest, work_highlight, etc.).
+ */
+router.post('/staff/:staffId/metadata', orgController.createStaffMetadata);
+
+/**
+ * PATCH /org/staff/:staffId/metadata/:id
+ * Update a metadata entry.
+ */
+router.patch('/staff/:staffId/metadata/:id', orgController.updateStaffMetadata);
+
+/**
+ * DELETE /org/staff/:staffId/metadata/:id
+ * Hard-delete a metadata entry. Recorded in audit_log.
+ */
+router.delete('/staff/:staffId/metadata/:id', orgController.deleteStaffMetadata);
+
+/**
+ * GET /org/resourcing
+ * Cross-staff search by metadata type + optional filters.
+ * Required: ?type=skill
+ * Optional: ?label=video&value=expert&featured=true
+ */
+router.get('/resourcing', orgController.searchByMetadata);
 
 export default router;
