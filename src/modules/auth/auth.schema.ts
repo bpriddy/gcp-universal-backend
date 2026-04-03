@@ -26,6 +26,17 @@ export const LogoutSchema = z.object({
     .max(512, 'refreshToken is too long'),
 });
 
+// Used by the ADK agent / Gemini Enterprise token bridge.
+// Accepts a Google OAuth access token and returns a GUB JWT.
+export const AccessTokenExchangeSchema = z.object({
+  accessToken: z
+    .string()
+    .min(1, 'accessToken is required')
+    .max(2048, 'accessToken is too long'),
+  appId: z.string().min(1).optional(),
+});
+
 export type GoogleLoginInput = z.infer<typeof GoogleLoginSchema>;
 export type RefreshInput = z.infer<typeof RefreshSchema>;
 export type LogoutInput = z.infer<typeof LogoutSchema>;
+export type AccessTokenExchangeInput = z.infer<typeof AccessTokenExchangeSchema>;

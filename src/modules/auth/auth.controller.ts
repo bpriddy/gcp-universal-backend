@@ -1,7 +1,7 @@
 import type { Request, Response, NextFunction } from 'express';
 import type { ParamsDictionary } from 'express-serve-static-core';
 import * as authService from './auth.service';
-import type { GoogleLoginInput, RefreshInput, LogoutInput } from './auth.schema';
+import type { GoogleLoginInput, RefreshInput, LogoutInput, AccessTokenExchangeInput } from './auth.schema';
 
 function getClientIp(req: Request): string | undefined {
   // Express resolves req.ip from X-Forwarded-For when trust proxy is set
@@ -73,6 +73,31 @@ export async function logoutAll(
     const userId = req.user!.sub;
     await authService.logoutAll(userId);
     res.status(204).send();
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * POST /auth/google/access-token-exchange
+ * ADK / Gemini Enterprise bridge. Accepts a Google OAuth access token
+ * (injected into the agent's ToolContext by Gemini Enterprise) and returns
+ * a GUB JWT so the agent can call GUB APIs on behalf of the user.
+ */
+export async function accessTokenExchange(
+  req: Request<ParamsDictionary, unknown, AccessTokenExchangeInput>,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const result = await authService.exchangeGoogleAccessToken(
+      req.body.accessToken,
+      getClientIp(req),
+      getUserAgent(req),
+      req.body.appId,
+    );
+    const status = 'status' in result && result.status === 'pending_approval' ? 202 : 200;
+    res.status(status).json(result);
   } catch (err) {
     next(err);
   }

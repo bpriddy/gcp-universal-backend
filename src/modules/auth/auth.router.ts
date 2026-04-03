@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { validateBody } from '../../middleware/validate';
 import { authenticate, requireAdmin } from '../../middleware/authenticate';
-import { GoogleLoginSchema, RefreshSchema, LogoutSchema } from './auth.schema';
+import { GoogleLoginSchema, RefreshSchema, LogoutSchema, AccessTokenExchangeSchema } from './auth.schema';
 import * as authController from './auth.controller';
 import * as brokerController from './broker.controller';
 
@@ -39,6 +39,23 @@ router.post('/logout-all', authenticate, authController.logoutAll);
  * Downstream services can use this to verify access tokens independently.
  */
 router.get('/jwks', authController.getJwks);
+
+/**
+ * POST /auth/google/access-token-exchange
+ * ADK / Gemini Enterprise token bridge.
+ * Accepts a Google OAuth access token (injected into an ADK agent's ToolContext
+ * by Gemini Enterprise) and returns a GUB JWT so the agent can call GUB APIs
+ * on behalf of the authenticated user.
+ *
+ * This is intentionally separate from the broker flow — it's a one-shot exchange
+ * for server-to-server calls where the OAuth dance has already happened on the
+ * platform side. Rate-limited the same as other auth endpoints.
+ */
+router.post(
+  '/google/access-token-exchange',
+  validateBody(AccessTokenExchangeSchema),
+  authController.accessTokenExchange,
+);
 
 // ── OAuth Broker ────────────────────────────────────────────────────────────
 // Server-side OAuth flow for headless clients (e.g. Agentspace MCP).
