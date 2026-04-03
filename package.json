@@ -25,8 +25,10 @@
     "start": "node dist/server.js",
     "dev": "ts-node -r dotenv/config src/server.ts",
     "db:generate": "prisma generate",
-    "db:migrate": "prisma migrate deploy",
-    "db:migrate:dev": "prisma migrate dev",
+    "db:migrate": "DATABASE_URL=$DATABASE_MIGRATOR_URL prisma migrate deploy",
+    "db:migrate:dev": "DATABASE_URL=$DATABASE_MIGRATOR_URL prisma migrate dev",
+    "db:roles": "psql $DATABASE_MIGRATOR_URL -f scripts/setup-db-roles.sql",
+    "db:cleanup": "node -r dotenv/config dist/scripts/cleanup.js",
     "db:studio": "prisma studio",
     "keys:generate": "bash scripts/generate-keys.sh",
     "test": "vitest run",
@@ -34,6 +36,7 @@
     "lint": "eslint src --ext .ts"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@prisma/client": "^5.10.0",
     "cors": "^2.8.5",
     "dotenv": "^17.3.1",

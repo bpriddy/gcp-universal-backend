@@ -77,30 +77,30 @@ export function Dashboard({ auth }: Props) {
           {showTokenInfo && <TokenDebugPanel />}
         </section>
 
-        {/* ── App access demo ── */}
+        {/* ── Org data demo ── */}
         <section style={styles.section}>
-          <h2 style={styles.sectionTitle}>Application Database Access</h2>
+          <h2 style={styles.sectionTitle}>Org Data</h2>
           <p style={styles.sectionDesc}>
-            Each request below sends your JWT Bearer token. The backend verifies your
-            permissions and routes you to the correct database pool.
-            Try accessing an app your account isn't permitted for — you'll get a{' '}
+            Each request below sends your JWT Bearer token. The backend checks your
+            grants and returns only the data you have access to.
+            Try an endpoint you haven't been granted — you'll get a{' '}
             <code>403 FORBIDDEN</code>.
           </p>
 
           <AppDataExample
-            appId="analytics"
-            label="Analytics Database"
-            endpoint="/api/analytics/data"
+            appId="accounts"
+            label="Accounts"
+            endpoint="/org/accounts"
           />
           <AppDataExample
-            appId="crm"
-            label="CRM Database"
-            endpoint="/api/crm/data"
+            appId="staff"
+            label="Staff Directory"
+            endpoint="/org/staff"
           />
           <AppDataExample
-            appId="reporting"
-            label="Reporting Database"
-            endpoint="/api/reporting/data"
+            appId="access-requests"
+            label="My Access Requests"
+            endpoint="/org/access-requests"
           />
         </section>
       </main>

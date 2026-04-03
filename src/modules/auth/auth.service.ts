@@ -6,20 +6,31 @@ import {
   revokeRefreshToken,
   revokeAllUserTokens,
 } from '../../services/token.service';
-import { findOrCreateUser, getUserWithPermissions } from '../../services/user.service';
-import { AccountDisabledError, type AuthResponse } from './auth.types';
+import {
+  findOrCreateUser,
+  checkOrProvisionAppAccess,
+  getUserWithPermissions,
+} from '../../services/user.service';
+import {
+  AccountDisabledError,
+  type AuthResponse,
+  type PendingApprovalResponse,
+} from './auth.types';
 import { config } from '../../config/env';
 import { logger } from '../../services/logger';
+
+export type GoogleLoginResult = AuthResponse | PendingApprovalResponse;
 
 export async function googleLogin(
   idToken: string,
   ipAddress: string | undefined,
   userAgent: string | undefined,
-): Promise<AuthResponse> {
+  appId?: string,
+): Promise<GoogleLoginResult> {
   // 1. Verify token with Google — throws GoogleAuthError if invalid
   const googlePayload = await verifyGoogleToken(idToken);
 
-  // 2. Find or provision user in our database
+  // 2. Resolve user identity (googleSub → email stub → JIT provision)
   const user = await findOrCreateUser(googlePayload);
 
   // 3. Check account is active
@@ -28,19 +39,32 @@ export async function googleLogin(
     throw new AccountDisabledError();
   }
 
-  // 4. Sign access token with RS256
+  // 4. App-level access check — only when the client identifies itself
+  if (appId) {
+    const access = await checkOrProvisionAppAccess(user.id, appId, user.isAdmin);
+
+    if (access === 'pending') {
+      logger.info(
+        { userId: user.id, email: user.email, appId },
+        'User login held at pending_approval for app',
+      );
+      return { status: 'pending_approval', userId: user.id, appId };
+    }
+  }
+
+  // 5. Sign access token with RS256
   const accessToken = await signAccessToken({
-    id: user.id,
-    email: user.email,
+    id:          user.id,
+    email:       user.email,
     displayName: user.displayName,
-    isAdmin: user.isAdmin,
+    isAdmin:     user.isAdmin,
     permissions: user.permissions,
   });
 
-  // 5. Issue opaque refresh token (stored as hash in DB)
+  // 6. Issue opaque refresh token
   const { rawToken: refreshToken } = await issueInitialRefreshToken(user.id, ipAddress, userAgent);
 
-  logger.info({ userId: user.id, email: user.email }, 'User logged in via Google OAuth');
+  logger.info({ userId: user.id, email: user.email, appId }, 'User logged in via Google OAuth');
 
   return {
     accessToken,
@@ -48,10 +72,10 @@ export async function googleLogin(
     expiresIn: config.JWT_ACCESS_TOKEN_TTL,
     tokenType: 'Bearer',
     user: {
-      id: user.id,
-      email: user.email,
+      id:          user.id,
+      email:       user.email,
       displayName: user.displayName,
-      avatarUrl: user.avatarUrl,
+      avatarUrl:   user.avatarUrl,
     },
   };
 }
@@ -61,44 +85,39 @@ export async function refreshTokens(
   ipAddress: string | undefined,
   userAgent: string | undefined,
 ): Promise<AuthResponse> {
-  // Rotate the refresh token — throws on reuse detection or invalid token
   const { rawToken: newRefreshToken, userId: uid } = await rotateRefreshToken(
     rawRefreshToken,
     ipAddress,
     userAgent,
   );
 
-  // Reload user + permissions (may have changed since token was issued)
   const user = await getUserWithPermissions(uid);
 
-  if (!user) {
-    throw new AccountDisabledError();
-  }
+  if (!user) throw new AccountDisabledError();
 
   if (!user.isActive) {
-    // Revoke all tokens and block further refresh
     await revokeAllUserTokens(uid);
     throw new AccountDisabledError();
   }
 
   const accessToken = await signAccessToken({
-    id: user.id,
-    email: user.email,
+    id:          user.id,
+    email:       user.email,
     displayName: user.displayName,
-    isAdmin: user.isAdmin,
+    isAdmin:     user.isAdmin,
     permissions: user.permissions,
   });
 
   return {
     accessToken,
     refreshToken: newRefreshToken,
-    expiresIn: config.JWT_ACCESS_TOKEN_TTL,
-    tokenType: 'Bearer',
+    expiresIn:    config.JWT_ACCESS_TOKEN_TTL,
+    tokenType:    'Bearer',
     user: {
-      id: user.id,
-      email: user.email,
+      id:          user.id,
+      email:       user.email,
       displayName: user.displayName,
-      avatarUrl: user.avatarUrl,
+      avatarUrl:   user.avatarUrl,
     },
   };
 }

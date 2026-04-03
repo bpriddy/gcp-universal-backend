@@ -23,8 +23,11 @@ export async function googleLogin(
       req.body.idToken,
       getClientIp(req),
       getUserAgent(req),
+      req.body.appId,
     );
-    res.status(200).json(result);
+    // pending_approval is a 202 — authenticated but not yet authorized for this app
+    const status = 'status' in result && result.status === 'pending_approval' ? 202 : 200;
+    res.status(status).json(result);
   } catch (err) {
     next(err);
   }

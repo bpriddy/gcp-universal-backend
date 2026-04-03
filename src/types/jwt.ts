@@ -1,6 +1,5 @@
 export interface TokenPermission {
   appId: string;
-  dbIdentifier: string;
   role: string;
 }
 

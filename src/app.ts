@@ -13,6 +13,7 @@ import healthRouter from './modules/health/health.router';
 import orgRouter from './modules/org/org.router';
 import oktaRouter from './modules/integrations/okta/okta.router';
 import devRouter from './modules/dev/dev.router';
+import mcpRouter from './modules/mcp/mcp.router';
 import { getJwks as getJwksHandler } from './modules/auth/auth.controller';
 
 export function createApp(): express.Application {
@@ -67,6 +68,9 @@ export function createApp(): express.Application {
   app.use('/auth', authLimiter, authRouter);
   app.use('/org', orgRouter);
   app.use('/integrations/okta', oktaRouter);
+
+  // MCP endpoint — delegated auth (Bearer token required on every request)
+  app.use('/mcp', mcpRouter);
 
   // Dev-only routes — never available in production
   if (!config.isProduction) {

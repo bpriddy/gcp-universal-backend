@@ -6,6 +6,10 @@ export const GoogleLoginSchema = z.object({
     .min(1, 'idToken is required')
     .max(4096, 'idToken is too long')
     .regex(/^[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+$/, 'idToken must be a valid JWT'),
+  // Which app is the user logging into.  When provided, UserAppPermission is
+  // checked and autoAccess provisioning is applied.  Omit for internal tools
+  // that manage access outside this flow (e.g. gub-admin via IAP).
+  appId: z.string().min(1).optional(),
 });
 
 export const RefreshSchema = z.object({

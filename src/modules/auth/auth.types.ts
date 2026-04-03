@@ -18,3 +18,9 @@ export interface AuthResponse {
     avatarUrl: string | null;
   };
 }
+
+export interface PendingApprovalResponse {
+  status: 'pending_approval';
+  userId: string;
+  appId: string;
+}

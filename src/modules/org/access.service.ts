@@ -27,10 +27,36 @@ export interface RevokeAccessParams {
   revokedBy: string;
 }
 
-// ── Core upsert ───────────────────────────────────────────────────────────
+// ── Audit helper ──────────────────────────────────────────────────────────────
+// Shared shape for the JSON columns — keeps the audit entries consistent
+// regardless of which call path produced them.
+
+interface GrantAuditSnapshot {
+  userId: string;
+  resourceType: string;
+  resourceId: string;
+  role: string;
+  expiresAt: Date | null | undefined;
+  grantedBy?: string;
+  grantedAt?: Date;
+  revokedAt?: Date;
+  revokedBy?: string;
+}
+
+// ── Core upsert ───────────────────────────────────────────────────────────────
 // Prisma cannot upsert on a partial unique index (WHERE revoked_at IS NULL),
 // so we use findFirst + update-or-create inside a transaction.
 // Safe at this scale — grant calls cover 1 account + N campaigns at most.
+//
+// Returns enough state for the caller to write a meaningful audit log entry
+// without a second SELECT.
+
+interface UpsertResult {
+  id: string;
+  isNew: boolean;
+  previousRole: string | null;
+  previousExpiresAt: Date | null;
+}
 
 async function upsertGrant(
   tx: Omit<typeof prisma, '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'>,
@@ -42,7 +68,7 @@ async function upsertGrant(
     grantedBy: string;
     expiresAt?: Date;
   },
-): Promise<void> {
+): Promise<UpsertResult> {
   const existing = await tx.accessGrant.findFirst({
     where: {
       userId: params.userId,
@@ -64,8 +90,14 @@ async function upsertGrant(
         revokedBy: null,
       },
     });
+    return {
+      id: existing.id,
+      isNew: false,
+      previousRole: existing.role,
+      previousExpiresAt: existing.expiresAt,
+    };
   } else {
-    await tx.accessGrant.create({
+    const created = await tx.accessGrant.create({
       data: {
         userId: params.userId,
         resourceType: params.resourceType,
@@ -75,10 +107,11 @@ async function upsertGrant(
         expiresAt: params.expiresAt ?? null,
       },
     });
+    return { id: created.id, isNew: true, previousRole: null, previousExpiresAt: null };
   }
 }
 
-// ── Grant ─────────────────────────────────────────────────────────────────
+// ── Grant ─────────────────────────────────────────────────────────────────────
 
 export async function grantAccountAccess(
   params: GrantAccountAccessParams,
@@ -98,8 +131,8 @@ export async function grantAccountAccess(
   }
 
   await prisma.$transaction(async (tx) => {
-    // Grant account access
-    await upsertGrant(tx, {
+    // ── Account grant ──────────────────────────────────────────────────────────
+    const accountResult = await upsertGrant(tx, {
       userId,
       resourceType: 'account',
       resourceId: accountId,
@@ -108,9 +141,23 @@ export async function grantAccountAccess(
       ...(expiresAt !== undefined ? { expiresAt } : {}),
     });
 
-    // Grant access to each campaign
+    const accountAfter: GrantAuditSnapshot = { userId, resourceType: 'account', resourceId: accountId, role, expiresAt };
+    await tx.auditLog.create({
+      data: {
+        action: accountResult.isNew ? 'grant_created' : 'grant_updated',
+        entityType: 'access_grant',
+        entityId: accountResult.id,
+        actorId: grantedBy,
+        ...(accountResult.isNew ? {} : {
+          before: { role: accountResult.previousRole, expiresAt: accountResult.previousExpiresAt },
+        }),
+        after: accountAfter as unknown as GrantAuditSnapshot,
+      },
+    });
+
+    // ── Campaign grants ────────────────────────────────────────────────────────
     for (const campaignId of campaignIds) {
-      await upsertGrant(tx, {
+      const campaignResult = await upsertGrant(tx, {
         userId,
         resourceType: 'campaign',
         resourceId: campaignId,
@@ -118,13 +165,27 @@ export async function grantAccountAccess(
         grantedBy,
         ...(expiresAt !== undefined ? { expiresAt } : {}),
       });
+
+      const campaignAfter: GrantAuditSnapshot = { userId, resourceType: 'campaign', resourceId: campaignId, role, expiresAt };
+      await tx.auditLog.create({
+        data: {
+          action: campaignResult.isNew ? 'grant_created' : 'grant_updated',
+          entityType: 'access_grant',
+          entityId: campaignResult.id,
+          actorId: grantedBy,
+          ...(campaignResult.isNew ? {} : {
+            before: { role: campaignResult.previousRole, expiresAt: campaignResult.previousExpiresAt },
+          }),
+          after: campaignAfter as unknown as GrantAuditSnapshot,
+        },
+      });
     }
   });
 
   return { account: 1, campaigns: campaignIds.length };
 }
 
-// ── Revoke ────────────────────────────────────────────────────────────────
+// ── Revoke ────────────────────────────────────────────────────────────────────
 
 export async function revokeAccess(params: RevokeAccessParams): Promise<void> {
   const { userId, resourceType, resourceId, revokedBy } = params;
@@ -135,13 +196,35 @@ export async function revokeAccess(params: RevokeAccessParams): Promise<void> {
 
   if (!grant) return; // Already revoked or never granted — idempotent
 
-  await prisma.accessGrant.update({
-    where: { id: grant.id },
-    data: { revokedAt: new Date(), revokedBy },
+  const now = new Date();
+
+  await prisma.$transaction(async (tx) => {
+    await tx.accessGrant.update({
+      where: { id: grant.id },
+      data: { revokedAt: now, revokedBy },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        action: 'grant_revoked',
+        entityType: 'access_grant',
+        entityId: grant.id,
+        actorId: revokedBy,
+        before: {
+          userId,
+          resourceType,
+          resourceId,
+          role: grant.role,
+          expiresAt: grant.expiresAt,
+          grantedAt: grant.grantedAt,
+        } as unknown as GrantAuditSnapshot,
+        after: { revokedAt: now, revokedBy } as unknown as GrantAuditSnapshot,
+      },
+    });
   });
 }
 
-// ── Check ─────────────────────────────────────────────────────────────────
+// ── Check ─────────────────────────────────────────────────────────────────────
 
 export async function checkAccess(
   userId: string,
@@ -166,7 +249,7 @@ export async function checkAccess(
   return grant !== null;
 }
 
-// ── Temporal access ───────────────────────────────────────────────────────
+// ── Temporal access ───────────────────────────────────────────────────────────
 // Controls how far back a user can query change-log / historical data.
 //
 // Roles (stored in access_grants.role where resource_type = 'func:temporal'):
@@ -214,7 +297,7 @@ export async function getTemporalCutoff(
   return null; // current_only — caller should not return historical data
 }
 
-// ── List granted resource IDs ─────────────────────────────────────────────
+// ── List granted resource IDs ─────────────────────────────────────────────────
 // Used by org.service.ts to build scoped queries.
 
 export async function getGrantedResourceIds(

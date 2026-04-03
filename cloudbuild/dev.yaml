@@ -94,7 +94,29 @@ steps:
       - --wait
     waitFor: [deploy-migration-job]
 
-  # ── 6. Deploy to Cloud Run ────────────────────────────────────────────────
+  # ── 6. Deploy cleanup job with new image ─────────────────────────────────
+  # Updates the job definition so Cloud Scheduler always runs the latest image.
+  # Cloud Scheduler owns the execution schedule — this step does NOT run it.
+  - id: deploy-cleanup-job
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - jobs
+      - deploy
+      - $_SERVICE-cleanup
+      - --image=$_REGION-docker.pkg.dev/$PROJECT_ID/$_AR_REPO/$_SERVICE:$SHORT_SHA
+      - --region=$_REGION
+      - --command=node
+      - --args=-r,dotenv/config,dist/scripts/cleanup.js
+      - --set-secrets=DATABASE_URL=$_DB_SECRET:latest
+      - --service-account=sa-$_SERVICE@$PROJECT_ID.iam.gserviceaccount.com
+      - --add-cloudsql-instances=$PROJECT_ID:$_REGION:$_CLOUDSQL_INSTANCE
+      - --max-retries=2
+      - --task-timeout=300s
+    waitFor: [migrate]
+
+  # ── 7. Deploy to Cloud Run ────────────────────────────────────────────────
   - id: deploy
     name: gcr.io/google.com/cloudsdktool/cloud-sdk
     entrypoint: gcloud

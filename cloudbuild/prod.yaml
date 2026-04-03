@@ -88,7 +88,27 @@ steps:
       - --wait
     waitFor: [deploy-migration-job]
 
-  # ── 6. Deploy to Cloud Run (no traffic — manual promotion required) ────────
+  # ── 6. Deploy cleanup job with new image ─────────────────────────────────
+  - id: deploy-cleanup-job
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - jobs
+      - deploy
+      - $_SERVICE-cleanup
+      - --image=$_REGION-docker.pkg.dev/$PROJECT_ID/$_AR_REPO/$_SERVICE:$SHORT_SHA
+      - --region=$_REGION
+      - --command=node
+      - --args=-r,dotenv/config,dist/scripts/cleanup.js
+      - --set-secrets=DATABASE_URL=$_DB_SECRET:latest
+      - --service-account=sa-$_SERVICE@$PROJECT_ID.iam.gserviceaccount.com
+      - --add-cloudsql-instances=$PROJECT_ID:$_REGION:$_CLOUDSQL_INSTANCE
+      - --max-retries=2
+      - --task-timeout=300s
+    waitFor: [migrate]
+
+  # ── 7. Deploy to Cloud Run (no traffic — manual promotion required) ────────
   - id: deploy
     name: gcr.io/google.com/cloudsdktool/cloud-sdk
     entrypoint: gcloud
@@ -114,7 +134,7 @@ steps:
       - --set-secrets=JWT_PRIVATE_KEY_B64=$_JWT_PRIV_SECRET:latest
       - --set-secrets=JWT_PUBLIC_KEY_B64=$_JWT_PUB_SECRET:latest
       - --add-cloudsql-instances=$PROJECT_ID:$_REGION:$_CLOUDSQL_INSTANCE
-    waitFor: [migrate]
+    waitFor: [deploy-cleanup-job]
 
   # ── 7. Print promotion instructions ──────────────────────────────────────
   - id: instructions

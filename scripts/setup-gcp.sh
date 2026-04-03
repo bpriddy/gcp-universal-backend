@@ -124,6 +124,41 @@ for ENV in "${ENVS[@]}"; do
     2>/dev/null || echo "   (trigger $TRIGGER_NAME already exists, skipping)"
 done
 
+# ── Cloud Scheduler — nightly cleanup jobs ────────────────────────────────────
+# Creates one Cloud Scheduler job per environment that triggers the cleanup
+# Cloud Run Job at 02:00 local time (UTC). The Cloud Run Job is deployed by
+# Cloud Build on every push — Cloud Scheduler owns the execution schedule.
+
+echo ""
+echo "── Creating Cloud Scheduler cleanup jobs ────────────────────────────────"
+
+gcloud services enable cloudscheduler.googleapis.com
+
+for ENV in "${ENVS[@]}"; do
+  SERVICE="gcp-universal-backend-$ENV"
+  SA_EMAIL="sa-$SERVICE@$PROJECT_ID.iam.gserviceaccount.com"
+  SCHEDULER_NAME="cleanup-$ENV"
+  JOB_NAME="$SERVICE-cleanup"
+
+  echo "→ Creating Cloud Scheduler job: $SCHEDULER_NAME..."
+  gcloud scheduler jobs create http "$SCHEDULER_NAME" \
+    --location="$REGION" \
+    --schedule="0 2 * * *" \
+    --time-zone="UTC" \
+    --uri="https://$REGION-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/$PROJECT_ID/jobs/$JOB_NAME:run" \
+    --message-body="{}" \
+    --oauth-service-account-email="$SA_EMAIL" \
+    --oauth-token-scope="https://www.googleapis.com/auth/cloud-platform" \
+    --attempt-deadline=360s \
+    2>/dev/null || echo "   (scheduler job $SCHEDULER_NAME already exists, skipping)"
+
+  # Grant the service account permission to invoke Cloud Run Jobs
+  gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+    --member="serviceAccount:$SA_EMAIL" \
+    --role="roles/run.invoker" \
+    --quiet
+done
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
 echo "========================================================================="

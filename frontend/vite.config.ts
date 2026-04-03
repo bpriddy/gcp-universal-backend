@@ -7,13 +7,10 @@ export default defineConfig({
     port: 5173,
     // Proxy API calls to the backend in dev — avoids CORS issues
     proxy: {
-      '/auth': {
-        target: 'http://localhost:3000',
-        changeOrigin: true,
-      },
       '/api': {
         target: 'http://localhost:3000',
         changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api/, ''),
       },
     },
   },
