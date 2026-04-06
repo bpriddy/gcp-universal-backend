@@ -1,9 +1,27 @@
 import { createApp } from './app';
 import { config } from './config/env';
-import { initializeAppDbPools, closeAllPools } from './config/database';
+import { initializeAppDbPools, closeAllPools, prisma } from './config/database';
 import { logger } from './services/logger';
 
+async function connectWithRetry(retries = 5, delayMs = 2000): Promise<void> {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      await prisma.$connect();
+      logger.info('Database connected');
+      return;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.warn({ attempt, retries, message }, 'Database connect failed, retrying...');
+      if (attempt === retries) throw err;
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+}
+
 async function main(): Promise<void> {
+  // Connect to DB with retry (Cloud SQL socket may not be immediately available)
+  await connectWithRetry();
+
   // Initialize application database connection pools
   initializeAppDbPools();
 
@@ -46,7 +64,11 @@ async function main(): Promise<void> {
   process.on('SIGINT', () => void shutdown('SIGINT'));
 
   process.on('unhandledRejection', (reason) => {
-    logger.error({ reason }, 'Unhandled promise rejection');
+    logger.error({
+      reason,
+      errorMessage: reason instanceof Error ? reason.message : String(reason),
+      errorStack: reason instanceof Error ? reason.stack : undefined,
+    }, 'Unhandled promise rejection');
     process.exit(1);
   });
 
