@@ -19,14 +19,12 @@ async function connectWithRetry(retries = 5, delayMs = 2000): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  // Connect to DB with retry (Cloud SQL socket may not be immediately available)
-  await connectWithRetry();
-
   // Initialize application database connection pools
   initializeAppDbPools();
 
   const app = createApp();
 
+  // Start listening immediately so Cloud Run health checks pass
   const server = app.listen(config.PORT, () => {
     logger.info(
       {
@@ -36,6 +34,14 @@ async function main(): Promise<void> {
       },
       'gcp-universal-backend started',
     );
+
+    // Connect to DB after the server is listening (Cloud SQL socket needs a moment)
+    connectWithRetry().catch((err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      const stack = err instanceof Error ? err.stack : undefined;
+      logger.error({ message, stack }, 'Database connection failed after retries — exiting');
+      process.exit(1);
+    });
   });
 
   // ── Graceful shutdown ──────────────────────────────────────────────────────
