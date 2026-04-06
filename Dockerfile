@@ -31,6 +31,8 @@ RUN addgroup --system --gid 1001 nodejs \
 COPY --from=builder --chown=nodeuser:nodejs /app/dist ./dist
 COPY --from=builder --chown=nodeuser:nodejs /app/node_modules ./node_modules
 COPY --from=builder --chown=nodeuser:nodejs /app/package.json ./
+# prisma/ is required by the migration job (prisma migrate deploy)
+COPY --from=builder --chown=nodeuser:nodejs /app/prisma ./prisma
 
 # Run as non-root
 USER nodeuser
