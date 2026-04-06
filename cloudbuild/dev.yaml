@@ -130,10 +130,6 @@ steps:
       - --port=3000
       - --service-account=sa-$_SERVICE@$PROJECT_ID.iam.gserviceaccount.com
       - --set-env-vars=NODE_ENV=development,GCP_PROJECT_ID=$PROJECT_ID
-      - --set-secrets=DATABASE_URL=$_DB_SECRET:latest
-      - --set-secrets=APP_DB_CONNECTIONS=$_APP_DB_SECRET:latest
-      - --set-secrets=GOOGLE_CLIENT_ID=$_GOOGLE_CLIENT_ID_SECRET:latest
-      - --set-secrets=JWT_PRIVATE_KEY_B64=$_JWT_PRIV_SECRET:latest
-      - --set-secrets=JWT_PUBLIC_KEY_B64=$_JWT_PUB_SECRET:latest
+      - --set-secrets=DATABASE_URL=$_DB_SECRET:latest,APP_DB_CONNECTIONS=$_APP_DB_SECRET:latest,GOOGLE_CLIENT_ID=$_GOOGLE_CLIENT_ID_SECRET:latest,JWT_PRIVATE_KEY_B64=$_JWT_PRIV_SECRET:latest,JWT_PUBLIC_KEY_B64=$_JWT_PUB_SECRET:latest
       - --set-cloudsql-instances=$PROJECT_ID:$_REGION:$_CLOUDSQL_INSTANCE
     waitFor: [migrate]
