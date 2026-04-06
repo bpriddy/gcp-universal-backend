@@ -1,5 +1,5 @@
 # ── Build stage ──────────────────────────────────────────────────────────────
-FROM node:20-alpine AS builder
+FROM node:20-slim AS builder
 
 WORKDIR /app
 
@@ -19,13 +19,16 @@ COPY src ./src
 RUN npm run build
 
 # ── Production stage ──────────────────────────────────────────────────────────
-FROM node:20-alpine AS runner
+FROM node:20-slim AS runner
 
 WORKDIR /app
 
+# Install OpenSSL + curl for Prisma engine and healthcheck
+RUN apt-get update -qq && apt-get install -y --no-install-recommends openssl curl && rm -rf /var/lib/apt/lists/*
+
 # Create a non-root user for the process
-RUN addgroup --system --gid 1001 nodejs \
- && adduser --system --uid 1001 --ingroup nodejs nodeuser
+RUN groupadd --system --gid 1001 nodejs \
+ && useradd --system --uid 1001 --gid nodejs nodeuser
 
 # Copy only production artifacts
 COPY --from=builder --chown=nodeuser:nodejs /app/dist ./dist
@@ -41,6 +44,6 @@ EXPOSE 3000
 
 # Healthcheck for Cloud Run / K8s
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget -qO- http://localhost:3000/health/live || exit 1
+  CMD curl -sf http://localhost:3000/health/live || exit 1
 
 CMD ["node", "dist/server.js"]
