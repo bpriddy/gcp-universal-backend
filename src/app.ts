@@ -11,7 +11,11 @@ import { logger } from './services/logger';
 import authRouter from './modules/auth/auth.router';
 import healthRouter from './modules/health/health.router';
 import orgRouter from './modules/org/org.router';
-import oktaRouter from './modules/integrations/okta/okta.router';
+import directoryRouter from './modules/integrations/google-directory/directory.router';
+import workfrontRouter from './modules/integrations/workfront/workfront.router';
+import driveRouter from './modules/integrations/google-drive/drive.router';
+import metadataImportRouter from './modules/integrations/staff-metadata-import/metadata-import.router';
+import syncRunsRouter from './modules/integrations/sync-runs.router';
 import devRouter from './modules/dev/dev.router';
 import mcpRouter from './modules/mcp/mcp.router';
 import { getJwks as getJwksHandler } from './modules/auth/auth.controller';
@@ -67,7 +71,11 @@ export function createApp(): express.Application {
   app.use('/health', healthRouter);
   app.use('/auth', authLimiter, authRouter);
   app.use('/org', orgRouter);
-  app.use('/integrations/okta', oktaRouter);
+  app.use('/integrations/google-directory', directoryRouter);
+  app.use('/integrations/workfront', workfrontRouter);
+  app.use('/integrations/google-drive', driveRouter);
+  app.use('/integrations/staff-metadata', metadataImportRouter);
+  app.use('/integrations/sync-runs', syncRunsRouter);
 
   // MCP endpoint — delegated auth (Bearer token required on every request)
   app.use('/mcp', mcpRouter);

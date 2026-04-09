@@ -51,7 +51,7 @@ model User {
 model Office {
   id        String    @id @default(uuid()) @db.Uuid
   name      String    @unique
-  oktaCity  String?   @unique @map("okta_city")
+  syncCity  String?   @unique @map("sync_city")
   isActive  Boolean   @default(true) @map("is_active")
   startedAt DateTime? @map("started_at") @db.Date
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
@@ -64,13 +64,15 @@ model Office {
 }
 
 model OfficeChange {
-  id        String    @id @default(uuid()) @db.Uuid
-  officeId  String    @map("office_id") @db.Uuid
-  property  String
-  valueText String?   @map("value_text")
-  valueDate DateTime? @map("value_date") @db.Date
-  changedBy String?   @map("changed_by") @db.Uuid
-  changedAt DateTime  @default(now()) @map("changed_at") @db.Timestamptz
+  id                String    @id @default(uuid()) @db.Uuid
+  officeId          String    @map("office_id") @db.Uuid
+  property          String
+  previousValueText String?   @map("previous_value_text")
+  previousValueDate DateTime? @map("previous_value_date") @db.Date
+  valueText         String?   @map("value_text")
+  valueDate         DateTime? @map("value_date") @db.Date
+  changedBy         String?   @map("changed_by") @db.Uuid
+  changedAt         DateTime  @default(now()) @map("changed_at") @db.Timestamptz
 
   office         Office @relation(fields: [officeId], references: [id], onDelete: Cascade)
   changedByStaff Staff? @relation("OfficeChangedByStaff", fields: [changedBy], references: [id])
@@ -95,13 +97,15 @@ model Team {
 }
 
 model TeamChange {
-  id        String    @id @default(uuid()) @db.Uuid
-  teamId    String    @map("team_id") @db.Uuid
-  property  String
-  valueText String?   @map("value_text")
-  valueDate DateTime? @map("value_date") @db.Date
-  changedBy String?   @map("changed_by") @db.Uuid
-  changedAt DateTime  @default(now()) @map("changed_at") @db.Timestamptz
+  id                String    @id @default(uuid()) @db.Uuid
+  teamId            String    @map("team_id") @db.Uuid
+  property          String
+  previousValueText String?   @map("previous_value_text")
+  previousValueDate DateTime? @map("previous_value_date") @db.Date
+  valueText         String?   @map("value_text")
+  valueDate         DateTime? @map("value_date") @db.Date
+  changedBy         String?   @map("changed_by") @db.Uuid
+  changedAt         DateTime  @default(now()) @map("changed_at") @db.Timestamptz
 
   team           Team   @relation(fields: [teamId], references: [id], onDelete: Cascade)
   changedByStaff Staff? @relation("TeamChangedByStaff", fields: [changedBy], references: [id])
@@ -162,17 +166,20 @@ model Staff {
 }
 
 // Append-only change log for staff — same pattern as account_changes / office_changes.
-// source: 'okta_sync' | 'okta_webhook' | 'admin' (how the change arrived)
+// source: 'google_directory_sync' | 'admin' | 'csv_import' (how the change arrived)
 model StaffChange {
-  id          String    @id @default(uuid()) @db.Uuid
-  staffId     String    @map("staff_id") @db.Uuid
-  property    String
-  valueText   String?   @map("value_text")
-  valueUuid   String?   @map("value_uuid") @db.Uuid
-  valueDate   DateTime? @map("value_date") @db.Date
-  valueIsPii  Boolean   @default(false) @map("value_is_pii")
-  source      String    @default("admin")
-  changedAt   DateTime  @default(now()) @map("changed_at") @db.Timestamptz
+  id                String    @id @default(uuid()) @db.Uuid
+  staffId           String    @map("staff_id") @db.Uuid
+  property          String
+  previousValueText String?   @map("previous_value_text")
+  previousValueUuid String?   @map("previous_value_uuid") @db.Uuid
+  previousValueDate DateTime? @map("previous_value_date") @db.Date
+  valueText         String?   @map("value_text")
+  valueUuid         String?   @map("value_uuid") @db.Uuid
+  valueDate         DateTime? @map("value_date") @db.Date
+  valueIsPii        Boolean   @default(false) @map("value_is_pii")
+  source            String    @default("admin")
+  changedAt         DateTime  @default(now()) @map("changed_at") @db.Timestamptz
 
   staff Staff @relation(fields: [staffId], references: [id], onDelete: Cascade)
 
@@ -216,14 +223,17 @@ model Account {
 // When value_uuid references a staff member, the property name
 // should end in _staff_id (e.g. account_exec_staff_id).
 model AccountChange {
-  id        String    @id @default(uuid()) @db.Uuid
-  accountId String    @map("account_id") @db.Uuid
-  property  String
-  valueText String?   @map("value_text")
-  valueUuid String?   @map("value_uuid") @db.Uuid
-  valueDate DateTime? @map("value_date") @db.Date
-  changedBy String    @map("changed_by") @db.Uuid
-  changedAt DateTime  @default(now()) @map("changed_at") @db.Timestamptz
+  id                String    @id @default(uuid()) @db.Uuid
+  accountId         String    @map("account_id") @db.Uuid
+  property          String
+  previousValueText String?   @map("previous_value_text")
+  previousValueUuid String?   @map("previous_value_uuid") @db.Uuid
+  previousValueDate DateTime? @map("previous_value_date") @db.Date
+  valueText         String?   @map("value_text")
+  valueUuid         String?   @map("value_uuid") @db.Uuid
+  valueDate         DateTime? @map("value_date") @db.Date
+  changedBy         String    @map("changed_by") @db.Uuid
+  changedAt         DateTime  @default(now()) @map("changed_at") @db.Timestamptz
 
   account         Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
   changedByStaff  Staff   @relation("AccountChangedByStaff", fields: [changedBy], references: [id])
@@ -260,14 +270,17 @@ model Campaign {
 // Append-only log of campaign property changes.
 // Same conventions as AccountChange.
 model CampaignChange {
-  id         String    @id @default(uuid()) @db.Uuid
-  campaignId String    @map("campaign_id") @db.Uuid
-  property   String
-  valueText  String?   @map("value_text")
-  valueUuid  String?   @map("value_uuid") @db.Uuid
-  valueDate  DateTime? @map("value_date") @db.Date
-  changedBy  String    @map("changed_by") @db.Uuid
-  changedAt  DateTime  @default(now()) @map("changed_at") @db.Timestamptz
+  id                String    @id @default(uuid()) @db.Uuid
+  campaignId        String    @map("campaign_id") @db.Uuid
+  property          String
+  previousValueText String?   @map("previous_value_text")
+  previousValueUuid String?   @map("previous_value_uuid") @db.Uuid
+  previousValueDate DateTime? @map("previous_value_date") @db.Date
+  valueText         String?   @map("value_text")
+  valueUuid         String?   @map("value_uuid") @db.Uuid
+  valueDate         DateTime? @map("value_date") @db.Date
+  changedBy         String    @map("changed_by") @db.Uuid
+  changedAt         DateTime  @default(now()) @map("changed_at") @db.Timestamptz
 
   campaign       Campaign @relation(fields: [campaignId], references: [id])
   changedByStaff Staff    @relation("CampaignChangedByStaff", fields: [changedBy], references: [id])
@@ -530,4 +543,52 @@ model StaffMetadata {
   @@index([type, label])
   @@index([type, value])
   @@map("staff_metadata")
+}
+
+// ── Sync runs ─────────────────────────────────────────────────────────────
+// One row per execution of any sync engine (google_directory, workfront, etc.).
+// `details` is structured JSONB for programmatic access; `summary` is a
+// pre-rendered human-readable digest for the admin UI.
+
+model DataSource {
+  id           String    @id @default(uuid()) @db.Uuid
+  key          String    @unique                          // 'google_directory' | 'workfront' | etc.
+  name         String                                     // 'Google Directory'
+  description  String?   @db.Text
+  isActive     Boolean   @default(true) @map("is_active")
+  syncInterval String    @default("daily") @map("sync_interval") // 'hourly' | 'daily' | 'weekly' | 'manual'
+  cronSchedule String?   @map("cron_schedule")            // '0 6 * * *' — actual cron expression
+  lastSyncAt   DateTime? @map("last_sync_at") @db.Timestamptz
+  lastStatus   String?   @map("last_status")              // 'success' | 'failed'
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@map("data_sources")
+}
+
+model SyncRun {
+  id          String    @id @default(uuid()) @db.Uuid
+  source      String    // 'google_directory' | 'workfront' | 'google_drive' | etc.
+  status      String    @default("running") // 'running' | 'success' | 'failed'
+  startedAt   DateTime  @default(now()) @map("started_at") @db.Timestamptz
+  completedAt DateTime? @map("completed_at") @db.Timestamptz
+  durationMs  Int?      @map("duration_ms")
+
+  // Counters
+  totalScanned Int @default(0) @map("total_scanned")
+  created      Int @default(0)
+  updated      Int @default(0)
+  unchanged    Int @default(0)
+  skipped      Int @default(0)
+  errored      Int @default(0)
+
+  // Structured details — skips, errors, warnings, changes with previous values
+  details Json?
+
+  // Human-readable narrative summary for the admin dashboard
+  summary String? @db.Text
+
+  @@index([source, startedAt(sort: Desc)])
+  @@index([status])
+  @@map("sync_runs")
 }

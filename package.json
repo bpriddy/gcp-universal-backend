@@ -43,6 +43,7 @@
     "express": "^4.18.3",
     "express-rate-limit": "^7.2.0",
     "google-auth-library": "^9.6.3",
+    "googleapis": "^171.4.0",
     "helmet": "^7.1.0",
     "jose": "^5.2.3",
     "pg": "^8.11.3",

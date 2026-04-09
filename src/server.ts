@@ -2,6 +2,7 @@ import { createApp } from './app';
 import { config } from './config/env';
 import { initializeAppDbPools, closeAllPools, prisma } from './config/database';
 import { logger } from './services/logger';
+import { checkImmutabilityTriggers } from './config/trigger-check';
 
 async function connectWithRetry(retries = 5, delayMs = 2000): Promise<void> {
   for (let attempt = 1; attempt <= retries; attempt++) {
@@ -36,12 +37,14 @@ async function main(): Promise<void> {
     );
 
     // Connect to DB after the server is listening (Cloud SQL socket needs a moment)
-    connectWithRetry().catch((err) => {
-      const message = err instanceof Error ? err.message : String(err);
-      const stack = err instanceof Error ? err.stack : undefined;
-      logger.error({ message, stack }, 'Database connection failed after retries — exiting');
-      process.exit(1);
-    });
+    connectWithRetry()
+      .then(() => checkImmutabilityTriggers())
+      .catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        const stack = err instanceof Error ? err.stack : undefined;
+        logger.error({ message, stack }, 'Database connection failed after retries — exiting');
+        process.exit(1);
+      });
   });
 
   // ── Graceful shutdown ──────────────────────────────────────────────────────

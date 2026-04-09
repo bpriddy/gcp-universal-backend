@@ -51,11 +51,18 @@ const EnvSchema = z.object({
 
   GCP_PROJECT_ID: z.string().optional(),
 
-  // ── Okta integration ───────────────────────────────────────────────────────
-  // OKTA_ORG_URL: full Okta org base URL, e.g. https://yourorg.okta.com
-  // OKTA_API_TOKEN: a service account API token (read-only scopes sufficient)
-  OKTA_ORG_URL: z.string().url().optional(),
-  OKTA_API_TOKEN: z.string().optional(),
+  // ── Google Directory sync ───────────────────────────────────────────────────
+  // Service account with domain-wide delegation for reading contacts.google.com/directory.
+  // One of key path or base64 is required to enable the sync.
+  GOOGLE_DIRECTORY_SA_KEY_PATH: z.string().optional(),
+  GOOGLE_DIRECTORY_SA_KEY_B64: z.string().optional(),
+  // Email of a domain user to impersonate (any user — directory is visible to all members).
+  GOOGLE_DIRECTORY_IMPERSONATE_EMAIL: z.string().email().optional(),
+
+  // ── Workfront integration ───────────────────────────────────────────────────
+  // Workfront proxies Maconomy for accounts and campaigns.
+  WORKFRONT_BASE_URL: z.string().url().optional(),
+  WORKFRONT_API_TOKEN: z.string().optional(),
 
   // ── OAuth Broker ───────────────────────────────────────────────────────────
   // Used only by the headless server-side OAuth flow (e.g. Agentspace MCP).

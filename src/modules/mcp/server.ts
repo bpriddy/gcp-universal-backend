@@ -14,11 +14,13 @@
  *     list_staffMetadata, get_staffMetadata, search_staffMetadata
  *     list_app, get_app, search_app
  *
- *   Compound (4 hand-crafted tools):
+ *   Compound (6 hand-crafted tools):
  *     find_staff_for_resourcing
  *     get_account_overview
  *     get_org_structure
  *     get_staff_access_summary
+ *     grant_full_account_access
+ *     revoke_full_account_access
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';

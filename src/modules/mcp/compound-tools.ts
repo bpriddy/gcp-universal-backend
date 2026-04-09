@@ -10,11 +10,14 @@
  *   get_account_overview         — account + all campaigns + staff who led them
  *   get_org_structure            — all offices + teams + headcount
  *   get_staff_access_summary     — what systems/resources a person has access to
+ *   grant_full_account_access    — cascading grant: account + campaigns + temporal
+ *   revoke_full_account_access   — cascading revoke: account + all related grants
  */
 
 import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { prisma } from '../../config/database';
+import { grantFullAccountAccess, revokeFullAccountAccess } from '../org/cascading-access.service';
 
 export function registerCompoundTools(server: McpServer): void {
 
@@ -259,6 +262,139 @@ export function registerCompoundTools(server: McpServer): void {
             staff: { id: staff.id, fullName: staff.fullName, title: staff.title, email: staff.email },
             totalGrants: grants.length,
             byResourceType: byType,
+          }, null, 2),
+        }],
+      };
+    },
+  );
+
+  // ── grant_full_account_access ───────────────────────────────────────────
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const grantAccountSchema: any = {
+    staffName:   z.string().optional().describe('Name of the person to grant access to (will resolve to userId)'),
+    staffEmail:  z.string().email().optional().describe('Email of the person to grant access to'),
+    accountName: z.string().optional().describe('Account name to grant access to (will resolve to accountId)'),
+    accountId:   z.string().uuid().optional().describe('Account UUID to grant access to'),
+    role:        z.enum(['viewer', 'contributor', 'manager', 'admin']).default('viewer').describe('Access role'),
+    actorStaffId: z.string().uuid().describe('Staff ID of the person granting access (for audit trail)'),
+  };
+
+  server.tool(
+    'grant_full_account_access',
+    'Grant cascading access to an account. This creates grants for the account itself, ' +
+    'all campaigns under it, and temporal (history) access. ' +
+    'Use for commands like "give X full access to the Budweiser account".',
+    grantAccountSchema,
+    async (args: Record<string, unknown>) => {
+      const { staffName, staffEmail, accountName, accountId, role, actorStaffId } = args as {
+        staffName?: string; staffEmail?: string; accountName?: string; accountId?: string;
+        role: string; actorStaffId: string;
+      };
+
+      // Resolve user
+      const staffWhere = staffEmail
+        ? { email: staffEmail }
+        : staffName
+          ? { fullName: { contains: staffName, mode: 'insensitive' as const } }
+          : null;
+
+      if (!staffWhere) {
+        return { content: [{ type: 'text' as const, text: 'Provide staffName or staffEmail.' }], isError: true };
+      }
+
+      const staff = await prisma.staff.findFirst({ where: staffWhere, select: { id: true, fullName: true, userId: true } });
+      if (!staff?.userId) {
+        return { content: [{ type: 'text' as const, text: 'Staff member not found or has no platform account.' }], isError: true };
+      }
+
+      // Resolve account
+      const resolvedAccountId = accountId ?? (accountName
+        ? (await prisma.account.findFirst({ where: { name: { contains: accountName, mode: 'insensitive' } }, select: { id: true } }))?.id
+        : null);
+
+      if (!resolvedAccountId) {
+        return { content: [{ type: 'text' as const, text: 'Account not found.' }], isError: true };
+      }
+
+      const result = await grantFullAccountAccess({
+        userId: staff.userId,
+        accountId: resolvedAccountId,
+        role: role as 'viewer' | 'contributor' | 'manager' | 'admin',
+        grantedBy: actorStaffId,
+      });
+
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            message: `Granted ${role} access to ${staff.fullName}`,
+            ...result,
+          }, null, 2),
+        }],
+      };
+    },
+  );
+
+  // ── revoke_full_account_access ──────────────────────────────────────────
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const revokeAccountSchema: any = {
+    staffName:   z.string().optional().describe('Name of the person to revoke access from'),
+    staffEmail:  z.string().email().optional().describe('Email of the person to revoke access from'),
+    accountName: z.string().optional().describe('Account name to revoke access from'),
+    accountId:   z.string().uuid().optional().describe('Account UUID to revoke access from'),
+    actorStaffId: z.string().uuid().describe('Staff ID of the person revoking access (for audit trail)'),
+  };
+
+  server.tool(
+    'revoke_full_account_access',
+    'Revoke all access a person has to an account and its campaigns. ' +
+    'Use for commands like "remove X from the Budweiser account".',
+    revokeAccountSchema,
+    async (args: Record<string, unknown>) => {
+      const { staffName, staffEmail, accountName, accountId, actorStaffId } = args as {
+        staffName?: string; staffEmail?: string; accountName?: string; accountId?: string;
+        actorStaffId: string;
+      };
+
+      // Resolve user
+      const staffWhere = staffEmail
+        ? { email: staffEmail }
+        : staffName
+          ? { fullName: { contains: staffName, mode: 'insensitive' as const } }
+          : null;
+
+      if (!staffWhere) {
+        return { content: [{ type: 'text' as const, text: 'Provide staffName or staffEmail.' }], isError: true };
+      }
+
+      const staff = await prisma.staff.findFirst({ where: staffWhere, select: { id: true, fullName: true, userId: true } });
+      if (!staff?.userId) {
+        return { content: [{ type: 'text' as const, text: 'Staff member not found or has no platform account.' }], isError: true };
+      }
+
+      // Resolve account
+      const resolvedAccountId = accountId ?? (accountName
+        ? (await prisma.account.findFirst({ where: { name: { contains: accountName, mode: 'insensitive' } }, select: { id: true } }))?.id
+        : null);
+
+      if (!resolvedAccountId) {
+        return { content: [{ type: 'text' as const, text: 'Account not found.' }], isError: true };
+      }
+
+      const result = await revokeFullAccountAccess({
+        userId: staff.userId,
+        accountId: resolvedAccountId,
+        revokedBy: actorStaffId,
+      });
+
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            message: `Revoked access from ${staff.fullName}`,
+            ...result,
           }, null, 2),
         }],
       };

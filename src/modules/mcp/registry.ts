@@ -73,13 +73,13 @@ export const registry: Record<string, EntityDef> = {
   },
 
   // ── Office ─────────────────────────────────────────────────────────────
-  // name, oktaCity, isActive
+  // name, syncCity, isActive
 
   office: {
     prismaModel: 'office',
     noun: 'office',
     description: 'Physical agency offices and locations.',
-    searchFields: ['name', 'oktaCity'],
+    searchFields: ['name', 'syncCity'],
     defaultOrderBy: { name: 'asc' },
     relations: {
       staff: { description: 'All staff members based in this office' },
