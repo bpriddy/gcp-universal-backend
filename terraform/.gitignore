@@ -1,0 +1,18 @@
+# Terraform local state and cache
+.terraform/
+*.tfstate
+*.tfstate.backup
+.terraform.lock.hcl
+
+# Crash logs
+crash.log
+crash.*.log
+
+# Override files (local developer customization)
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# tfvars containing secrets (env files are safe — no secrets)
+# *.auto.tfvars
