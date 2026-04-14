@@ -138,6 +138,19 @@ const GUBContext = createContext<GUBContextValue | null>(null);
 export interface GUBProviderProps {
   config: GUBConfig;
   children: React.ReactNode;
+  /**
+   * If provided, restore a previous session on mount instead of requiring a
+   * fresh Google sign-in. Pass the refresh token from your server-side session
+   * store — GUBProvider will exchange it for fresh access + refresh tokens
+   * via the GUB /auth/refresh endpoint.
+   */
+  initialRefreshToken?: string | null;
+  /**
+   * Called whenever tokens change: after login, after silent refresh, and on
+   * logout (with null). Use this to persist tokens to a server-side session
+   * store so they survive page reloads.
+   */
+  onTokensChange?: (tokens: { accessToken: string; refreshToken: string } | null) => void;
 }
 
 /**
@@ -148,12 +161,16 @@ export interface GUBProviderProps {
  *   <App />
  * </GUBProvider>
  */
-export function GUBProvider({ config, children }: GUBProviderProps) {
+export function GUBProvider({ config, children, initialRefreshToken, onTokensChange }: GUBProviderProps) {
   const [user, setUser] = useState<GUBUser | null>(null);
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const baseUrl = config.gubUrl.replace(/\/$/, '');
+
+  // Stable ref for onTokensChange so it doesn't re-trigger memoized callbacks
+  const onTokensChangeRef = useRef(onTokensChange);
+  onTokensChangeRef.current = onTokensChange;
 
   // Decode JWT payload and store tokens in memory
   const storeTokens = useCallback((access: string, refresh: string) => {
@@ -166,6 +183,9 @@ export function GUBProvider({ config, children }: GUBProviderProps) {
 
     // Merge avatarUrl from auth response since it may not be in JWT claims
     setUser(payload);
+
+    // Notify consumer (e.g. session persistence layer)
+    onTokensChangeRef.current?.({ accessToken: access, refreshToken: refresh });
 
     // Schedule silent refresh 30s before expiry
     const msUntilExpiry = payload.exp * 1000 - Date.now();
@@ -264,6 +284,7 @@ export function GUBProvider({ config, children }: GUBProviderProps) {
     _refreshToken = null;
     setAccessToken(null);
     setUser(null);
+    onTokensChangeRef.current?.(null);
     window.google?.accounts.id.disableAutoSelect();
   }, [baseUrl]);
 
@@ -290,6 +311,34 @@ export function GUBProvider({ config, children }: GUBProviderProps) {
     },
     [silentRefresh],
   );
+
+  // Restore session from an initial refresh token (e.g. from a server-side
+  // session store). Runs once on mount — if the token is valid, exchanges it
+  // for fresh access + refresh tokens via the GUB /auth/refresh endpoint.
+  const hasRestoredRef = useRef(false);
+  useEffect(() => {
+    if (hasRestoredRef.current || !initialRefreshToken) return;
+    hasRestoredRef.current = true;
+    setIsLoading(true);
+    (async () => {
+      try {
+        const res = await window.fetch(`${baseUrl}/auth/refresh`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refreshToken: initialRefreshToken }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          storeTokens(data.accessToken, data.refreshToken);
+        }
+      } catch {
+        // Refresh failed — user will need to sign in manually
+      } finally {
+        setIsLoading(false);
+      }
+    })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Clean up refresh timer on unmount
   useEffect(() => {

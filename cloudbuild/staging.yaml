@@ -15,6 +15,8 @@ substitutions:
   _JWT_PRIV_SECRET: staging-jwt-private-key-b64
   _JWT_PUB_SECRET: staging-jwt-public-key-b64
   _CLOUDSQL_INSTANCE: gub-platform
+  _JWT_ISSUER: https://gcp-universal-backend-staging-843516467880.us-central1.run.app
+  _JWT_AUDIENCE: https://gcp-universal-backend-staging-843516467880.us-central1.run.app
 
 options:
   logging: CLOUD_LOGGING_ONLY
@@ -119,7 +121,7 @@ steps:
       - --cpu=1
       - --port=3000
       - --service-account=sa-$_SERVICE@$PROJECT_ID.iam.gserviceaccount.com
-      - --set-env-vars=NODE_ENV=production,GCP_PROJECT_ID=$PROJECT_ID
+      - --set-env-vars=NODE_ENV=production,GCP_PROJECT_ID=$PROJECT_ID,JWT_ISSUER=$_JWT_ISSUER,JWT_AUDIENCE=$_JWT_AUDIENCE
       - --set-secrets=DATABASE_URL=$_DB_SECRET:latest
       - --set-secrets=APP_DB_CONNECTIONS=$_APP_DB_SECRET:latest
       - --set-secrets=GOOGLE_CLIENT_ID=$_GOOGLE_CLIENT_ID_SECRET:latest
