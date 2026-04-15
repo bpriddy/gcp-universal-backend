@@ -77,6 +77,54 @@ const EnvSchema = z.object({
   BROKER_TEST_CLIENT_ID: z.string().optional(),
   BROKER_TEST_CLIENT_SECRET: z.string().optional(),
   BROKER_TEST_REDIRECT_URI: z.string().url().optional(),
+
+  // ── Google Drive sync ──────────────────────────────────────────────────────
+  // Service account shared into each account/campaign's Drive folder.
+  // One of path or base64 is required to enable the sync.
+  // Falls back to GOOGLE_DIRECTORY_SA_* if drive-specific keys aren't set,
+  // so you can reuse a single SA in dev.
+  GOOGLE_DRIVE_SA_KEY_PATH: z.string().optional(),
+  GOOGLE_DRIVE_SA_KEY_B64: z.string().optional(),
+  // Optional impersonation. When unset, operates as the SA directly — fine
+  // when folders are shared with the SA's email. Set to a domain user if you
+  // need domain-wide delegation to see files the SA isn't explicitly shared on.
+  GOOGLE_DRIVE_IMPERSONATE_EMAIL: z.string().email().optional(),
+
+  // Root folder of the shared Drive that houses all account folders.
+  // Top-level children that don't map to an existing account's
+  // drive_folder_id become "new account" proposals. Required for discovery;
+  // per-entity scans (scanEntity) work without it.
+  DRIVE_ROOT_FOLDER_ID: z.string().optional(),
+
+  // Pacing knobs (Phase 5 will consume these). Declared now so scripts can read.
+  DRIVE_DELAY_BETWEEN_ACCOUNTS_MS: z.string().default('5000').transform(Number),
+  DRIVE_DELAY_BETWEEN_CAMPAIGNS_MS: z.string().default('2000').transform(Number),
+  DRIVE_DELAY_BETWEEN_FILES_MS: z.string().default('500').transform(Number),
+  // Skip files larger than this at extraction time (bytes). Default 25 MB.
+  DRIVE_MAX_FILE_SIZE_BYTES: z.string().default('26214400').transform(Number),
+
+  // ── AI / Gemini ────────────────────────────────────────────────────────────
+  // When unset, LLM callers fall back to a mock driver that returns empty
+  // observations — pipelines still run end-to-end in dev.
+  GEMINI_API_KEY: z.string().optional(),
+  // How many characters of extracted file text to send. Hard cap on per-file
+  // prompt size. Files longer than this are truncated with a trailing marker.
+  GEMINI_MAX_INPUT_CHARS: z.string().default('40000').transform(Number),
+  // Proposal TTL in days. Expired proposals are swept by Phase 6's review flow.
+  DRIVE_PROPOSAL_TTL_DAYS: z.string().default('14').transform(Number),
+
+  // ── Mail ───────────────────────────────────────────────────────────────────
+  // Driver selection. In dev, 'console' logs the rendered email to stdout
+  // instead of sending — safe default. In production, set to 'mailgun'.
+  MAIL_DRIVER: z.enum(['console', 'mailgun']).default('console'),
+  // Required when MAIL_DRIVER=mailgun. Region selects api.mailgun.net (us) vs
+  // api.eu.mailgun.net (eu). MAILGUN_DOMAIN is the sending domain registered
+  // in the Mailgun dashboard (e.g. "mg.example.com").
+  MAILGUN_API_KEY: z.string().optional(),
+  MAILGUN_DOMAIN: z.string().optional(),
+  MAILGUN_REGION: z.enum(['us', 'eu']).default('us'),
+  MAIL_FROM_ADDRESS: z.string().email().optional(),
+  MAIL_FROM_NAME: z.string().default('GUB'),
 });
 
 function loadKeyMaterial(

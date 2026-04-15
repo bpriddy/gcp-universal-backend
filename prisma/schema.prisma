@@ -25,15 +25,15 @@ model User {
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz
 
-  permissions        UserAppPermission[]
-  refreshTokens      RefreshToken[]
-  grantedPerms       UserAppPermission[] @relation("GrantedByUser")
-  externalIds        UserExternalId[]
-  staffProfile       Staff?
-  accessGrants       AccessGrant[]
-  accessRequests     AccessRequest[]
-  appAccessRequests  AppAccessRequest[]
-  oauthAuthCodes     OAuthAuthCode[]
+  permissions       UserAppPermission[]
+  refreshTokens     RefreshToken[]
+  grantedPerms      UserAppPermission[] @relation("GrantedByUser")
+  externalIds       UserExternalId[]
+  staffProfile      Staff?
+  accessGrants      AccessGrant[]
+  accessRequests    AccessRequest[]
+  appAccessRequests AppAccessRequest[]
+  oauthAuthCodes    OAuthAuthCode[]
 
   @@map("users")
 }
@@ -142,22 +142,27 @@ model Staff {
   createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz
   updatedAt  DateTime  @updatedAt @map("updated_at") @db.Timestamptz
 
-  user             User?           @relation(fields: [userId], references: [id], onDelete: SetNull)
-  office           Office?         @relation(fields: [officeId], references: [id], onDelete: SetNull)
-  teamMemberships  TeamMember[]
-  externalIds      StaffExternalId[]
-  changes          StaffChange[]
-  accountChanges   AccountChange[]  @relation("AccountChangedByStaff")
-  campaignsCreated Campaign[]       @relation("CampaignCreatedByStaff")
-  campaignChanges  CampaignChange[] @relation("CampaignChangedByStaff")
-  officeChanges    OfficeChange[]   @relation("OfficeChangedByStaff")
-  teamChanges      TeamChange[]     @relation("TeamChangedByStaff")
-  auditActions        AuditLog[]         @relation("AuditLogActorStaff")
-  grantsGiven         AccessGrant[]      @relation("AccessGrantGrantedByStaff")
-  grantsRevoked       AccessGrant[]      @relation("AccessGrantRevokedByStaff")
-  reviewedRequests    AccessRequest[]    @relation("AccessRequestReviewedByStaff")
-  reviewedAppRequests AppAccessRequest[] @relation("AppAccessRequestReviewedByStaff")
-  metadata            StaffMetadata[]
+  user                   User?                 @relation(fields: [userId], references: [id], onDelete: SetNull)
+  office                 Office?               @relation(fields: [officeId], references: [id], onDelete: SetNull)
+  teamMemberships        TeamMember[]
+  externalIds            StaffExternalId[]
+  changes                StaffChange[]
+  accountChanges         AccountChange[]       @relation("AccountChangedByStaff")
+  campaignsCreated       Campaign[]            @relation("CampaignCreatedByStaff")
+  campaignChanges        CampaignChange[]      @relation("CampaignChangedByStaff")
+  officeChanges          OfficeChange[]        @relation("OfficeChangedByStaff")
+  teamChanges            TeamChange[]          @relation("TeamChangedByStaff")
+  auditActions           AuditLog[]            @relation("AuditLogActorStaff")
+  grantsGiven            AccessGrant[]         @relation("AccessGrantGrantedByStaff")
+  grantsRevoked          AccessGrant[]         @relation("AccessGrantRevokedByStaff")
+  reviewedRequests       AccessRequest[]       @relation("AccessRequestReviewedByStaff")
+  reviewedAppRequests    AppAccessRequest[]    @relation("AppAccessRequestReviewedByStaff")
+  metadata               StaffMetadata[]
+  ownedAccounts          Account[]             @relation("AccountOwnerStaff")
+  accountsAsExec         Account[]             @relation("AccountExecStaff")
+  driveProposalReviews   DriveChangeProposal[] @relation("DriveProposalReviewerStaff")
+  driveProposalDecisions DriveChangeProposal[] @relation("DriveProposalDecidedByStaff")
+  promptPresetEdits      PromptPreset[]        @relation("PromptPresetUpdatedByStaff")
 
   @@index([userId])
   @@index([officeId])
@@ -204,17 +209,40 @@ model StaffExternalId {
 // ── Accounts ───────────────────────────────────────────────────────────────
 
 model Account {
-  id        String   @id @default(uuid()) @db.Uuid
-  name      String
-  parentId  String?  @map("parent_id") @db.Uuid
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+  id                  String    @id @default(uuid()) @db.Uuid
+  name                String
+  parentId            String?   @map("parent_id") @db.Uuid
+  ownerStaffId        String?   @map("owner_staff_id") @db.Uuid
+  // Business fields ("write both": state on row, history in account_changes).
+  // Drive sync proposals target these; allowlist lives in drive.schema.ts.
+  status              String?
+  accountExecStaffId  String?   @map("account_exec_staff_id") @db.Uuid
+  industry            String?
+  primaryContactName  String?   @map("primary_contact_name")
+  primaryContactEmail String?   @map("primary_contact_email")
+  notes               String?
+  // Drive anchoring
+  driveFolderId       String?   @map("drive_folder_id")
+  driveFolderUrl      String?   @map("drive_folder_url")
+  driveFolderPath     String?   @map("drive_folder_path")
+  driveLastScannedAt  DateTime? @map("drive_last_scanned_at") @db.Timestamptz
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt           DateTime  @updatedAt @map("updated_at") @db.Timestamptz
 
-  parent    Account?        @relation("AccountHierarchy", fields: [parentId], references: [id])
-  children  Account[]       @relation("AccountHierarchy")
-  changes   AccountChange[]
-  campaigns Campaign[]
+  parent             Account?              @relation("AccountHierarchy", fields: [parentId], references: [id])
+  children           Account[]             @relation("AccountHierarchy")
+  owner              Staff?                @relation("AccountOwnerStaff", fields: [ownerStaffId], references: [id], onDelete: SetNull)
+  accountExec        Staff?                @relation("AccountExecStaff", fields: [accountExecStaffId], references: [id], onDelete: SetNull)
+  changes            AccountChange[]
+  campaigns          Campaign[]
+  driveFileSnapshots DriveFileSnapshot[]
+  driveScanLogs      DriveScanLog[]
+  driveProposals     DriveChangeProposal[]
 
+  @@index([ownerStaffId])
+  @@index([accountExecStaffId])
+  @@index([status])
+  @@index([driveFolderId])
   @@map("accounts")
 }
 
@@ -235,8 +263,8 @@ model AccountChange {
   changedBy         String    @map("changed_by") @db.Uuid
   changedAt         DateTime  @default(now()) @map("changed_at") @db.Timestamptz
 
-  account         Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  changedByStaff  Staff   @relation("AccountChangedByStaff", fields: [changedBy], references: [id])
+  account        Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  changedByStaff Staff   @relation("AccountChangedByStaff", fields: [changedBy], references: [id])
 
   @@index([accountId, property, changedAt(sort: Desc)])
   @@map("account_changes")
@@ -245,25 +273,33 @@ model AccountChange {
 // ── Campaigns ──────────────────────────────────────────────────────────────
 
 model Campaign {
-  id        String    @id @default(uuid()) @db.Uuid
-  accountId String    @map("account_id") @db.Uuid
-  name      String
-  status    String    @default("pitch")
-  budget    Decimal?  @db.Decimal(15, 2)
-  assetsUrl String?   @map("assets_url")
-  awardedAt DateTime? @map("awarded_at") @db.Date
-  liveAt    DateTime? @map("live_at") @db.Date
-  endsAt    DateTime? @map("ends_at") @db.Date
-  createdBy String    @map("created_by") @db.Uuid
-  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+  id                 String    @id @default(uuid()) @db.Uuid
+  accountId          String    @map("account_id") @db.Uuid
+  name               String
+  status             String    @default("pitch")
+  budget             Decimal?  @db.Decimal(15, 2)
+  assetsUrl          String?   @map("assets_url")
+  awardedAt          DateTime? @map("awarded_at") @db.Date
+  liveAt             DateTime? @map("live_at") @db.Date
+  endsAt             DateTime? @map("ends_at") @db.Date
+  driveFolderId      String?   @map("drive_folder_id")
+  driveFolderUrl     String?   @map("drive_folder_url")
+  driveFolderPath    String?   @map("drive_folder_path")
+  driveLastScannedAt DateTime? @map("drive_last_scanned_at") @db.Timestamptz
+  createdBy          String    @map("created_by") @db.Uuid
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt          DateTime  @updatedAt @map("updated_at") @db.Timestamptz
 
-  account          Account          @relation(fields: [accountId], references: [id])
-  createdByStaff   Staff            @relation("CampaignCreatedByStaff", fields: [createdBy], references: [id])
-  changes          CampaignChange[]
+  account            Account               @relation(fields: [accountId], references: [id])
+  createdByStaff     Staff                 @relation("CampaignCreatedByStaff", fields: [createdBy], references: [id])
+  changes            CampaignChange[]
+  driveFileSnapshots DriveFileSnapshot[]
+  driveScanLogs      DriveScanLog[]
+  driveProposals     DriveChangeProposal[]
 
   @@index([accountId])
   @@index([status])
+  @@index([driveFolderId])
   @@map("campaigns")
 }
 
@@ -400,15 +436,15 @@ model UserExternalId {
 }
 
 model App {
-  id            String   @id @default(uuid()) @db.Uuid
-  appId         String   @unique @map("app_id")
-  name          String
-  description   String?
-  autoAccess    Boolean  @default(false) @map("auto_access")
-  dbIdentifier  String?  @map("db_identifier")
-  isActive      Boolean  @default(true) @map("is_active")
-  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz
+  id           String   @id @default(uuid()) @db.Uuid
+  appId        String   @unique @map("app_id")
+  name         String
+  description  String?
+  autoAccess   Boolean  @default(false) @map("auto_access")
+  dbIdentifier String?  @map("db_identifier")
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz
 
   permissions    UserAppPermission[]
   accessRequests AppAccessRequest[]
@@ -552,14 +588,14 @@ model StaffMetadata {
 
 model DataSource {
   id           String    @id @default(uuid()) @db.Uuid
-  key          String    @unique                          // 'google_directory' | 'workfront' | etc.
-  name         String                                     // 'Google Directory'
+  key          String    @unique // 'google_directory' | 'workfront' | etc.
+  name         String // 'Google Directory'
   description  String?   @db.Text
   isActive     Boolean   @default(true) @map("is_active")
   syncInterval String    @default("daily") @map("sync_interval") // 'hourly' | 'daily' | 'weekly' | 'manual'
-  cronSchedule String?   @map("cron_schedule")            // '0 6 * * *' — actual cron expression
+  cronSchedule String?   @map("cron_schedule") // '0 6 * * *' — actual cron expression
   lastSyncAt   DateTime? @map("last_sync_at") @db.Timestamptz
-  lastStatus   String?   @map("last_status")              // 'success' | 'failed'
+  lastStatus   String?   @map("last_status") // 'success' | 'failed'
   createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz
   updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz
 
@@ -568,7 +604,7 @@ model DataSource {
 
 model SyncRun {
   id          String    @id @default(uuid()) @db.Uuid
-  source      String    // 'google_directory' | 'workfront' | 'google_drive' | etc.
+  source      String // 'google_directory' | 'workfront' | 'google_drive' | etc.
   status      String    @default("running") // 'running' | 'success' | 'failed'
   startedAt   DateTime  @default(now()) @map("started_at") @db.Timestamptz
   completedAt DateTime? @map("completed_at") @db.Timestamptz
@@ -591,4 +627,133 @@ model SyncRun {
   @@index([source, startedAt(sort: Desc)])
   @@index([status])
   @@map("sync_runs")
+}
+
+// ── Prompt presets ────────────────────────────────────────────────────────
+// Editable LLM prompt templates used across modules. Lookup by key.
+// `variables` is a JSON array of declared variable names.
+
+model PromptPreset {
+  id          String   @id @default(uuid()) @db.Uuid
+  key         String   @unique
+  description String?
+  template    String   @db.Text
+  variables   Json     @default("[]")
+  model       String   @default("gemini-1.5-pro")
+  temperature Decimal  @default(0.20) @db.Decimal(3, 2)
+  isActive    Boolean  @default(true) @map("is_active")
+  updatedBy   String?  @map("updated_by") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  updatedByStaff Staff? @relation("PromptPresetUpdatedByStaff", fields: [updatedBy], references: [id], onDelete: SetNull)
+
+  @@map("prompt_presets")
+}
+
+// ── Drive file snapshots ──────────────────────────────────────────────────
+// Append-only per-file history. Powers delta-skip: compare Drive's modifiedTime
+// to the latest scanned_at row for this file_id.
+
+model DriveFileSnapshot {
+  id           String    @id @default(uuid()) @db.Uuid
+  syncRunId    String?   @map("sync_run_id") @db.Uuid
+  fileId       String    @map("file_id")
+  accountId    String?   @map("account_id") @db.Uuid
+  campaignId   String?   @map("campaign_id") @db.Uuid
+  name         String
+  mimeType     String?   @map("mime_type")
+  path         String?
+  modifiedTime DateTime? @map("modified_time") @db.Timestamptz
+  modifiedBy   String?   @map("modified_by")
+  sizeBytes    BigInt?   @map("size_bytes")
+  contentHash  String?   @map("content_hash")
+  wasExtracted Boolean   @default(false) @map("was_extracted")
+  skipReason   String?   @map("skip_reason")
+  scannedAt    DateTime  @default(now()) @map("scanned_at") @db.Timestamptz
+
+  account  Account?  @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  campaign Campaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+
+  @@index([fileId, scannedAt(sort: Desc)])
+  @@index([accountId])
+  @@index([campaignId])
+  @@index([syncRunId])
+  @@map("drive_file_snapshots")
+}
+
+// ── Drive scan logs ───────────────────────────────────────────────────────
+// Uncategorized-but-interesting info and operational warnings sink.
+// Mirrors the directory-sync-logs UX in gub-admin.
+
+model DriveScanLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  syncRunId  String?  @map("sync_run_id") @db.Uuid
+  accountId  String?  @map("account_id") @db.Uuid
+  campaignId String?  @map("campaign_id") @db.Uuid
+  fileId     String?  @map("file_id")
+  level      String // info | note | warn | error
+  category   String // uncategorized_insight | ambiguous | skipped_* | *_error | diagnostic
+  message    String
+  payload    Json?
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  account  Account?  @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  campaign Campaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+
+  @@index([syncRunId])
+  @@index([accountId, createdAt(sort: Desc)])
+  @@index([campaignId, createdAt(sort: Desc)])
+  @@index([level])
+  @@map("drive_scan_logs")
+}
+
+// ── Drive change proposals ────────────────────────────────────────────────
+// Structured proposals emitted by the distillation step. Reviewed by the
+// account owner via magic link. On approval, a row is written to
+// account_changes / campaign_changes with the reviewer's staff_id.
+
+model DriveChangeProposal {
+  id                  String    @id @default(uuid()) @db.Uuid
+  syncRunId           String?   @map("sync_run_id") @db.Uuid
+  // kind='field_change' edits an existing row; kind='new_entity' proposes
+  // creating a new account/campaign. new_entity rows share a proposal_group_id
+  // and carry source_drive_folder_id so approval can link folder→new row.
+  kind                String    @default("field_change")
+  proposalGroupId     String?   @map("proposal_group_id") @db.Uuid
+  sourceDriveFolderId String?   @map("source_drive_folder_id")
+  entityType          String    @map("entity_type") // 'account' | 'campaign'
+  accountId           String?   @map("account_id") @db.Uuid
+  campaignId          String?   @map("campaign_id") @db.Uuid
+  property            String
+  currentValue        Json?     @map("current_value")
+  proposedValue       Json?     @map("proposed_value")
+  reasoning           String?
+  sourceFileIds       String[]  @map("source_file_ids")
+  confidence          Decimal?  @db.Decimal(3, 2)
+  state               String    @default("pending") // pending | approved | rejected | applied | expired
+  reviewToken         String    @unique @map("review_token")
+  reviewerEmail       String?   @map("reviewer_email")
+  reviewerStaffId     String?   @map("reviewer_staff_id") @db.Uuid
+  expiresAt           DateTime  @map("expires_at") @db.Timestamptz
+  decidedAt           DateTime? @map("decided_at") @db.Timestamptz
+  decidedBy           String?   @map("decided_by") @db.Uuid
+  appliedChangeId     String?   @map("applied_change_id") @db.Uuid
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  account        Account?  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  campaign       Campaign? @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  reviewerStaff  Staff?    @relation("DriveProposalReviewerStaff", fields: [reviewerStaffId], references: [id], onDelete: SetNull)
+  decidedByStaff Staff?    @relation("DriveProposalDecidedByStaff", fields: [decidedBy], references: [id], onDelete: SetNull)
+
+  @@index([state])
+  @@index([accountId, state])
+  @@index([campaignId, state])
+  @@index([syncRunId])
+  @@index([reviewerStaffId])
+  @@index([expiresAt])
+  @@index([proposalGroupId])
+  @@index([sourceDriveFolderId])
+  @@index([kind, state])
+  @@map("drive_change_proposals")
 }

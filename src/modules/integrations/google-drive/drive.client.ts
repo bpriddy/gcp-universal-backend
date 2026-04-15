@@ -1,92 +1,111 @@
 /**
- * drive.client.ts — Google Drive API client for project folder scanning.
+ * drive.client.ts — Google Drive API client.
  *
- * Uses a service account with domain-wide delegation (same pattern as
- * the directory sync) to list folders and read project state files.
+ * Auth: service account. Folders must be shared with the SA's email.
+ * Optional domain-wide delegation via GOOGLE_DRIVE_IMPERSONATE_EMAIL.
  *
- * TODO: Implement once folder conventions are defined.
- * See README.md in this directory for design decisions.
+ * Falls back to the Directory SA (GOOGLE_DIRECTORY_SA_*) when drive-specific
+ * keys aren't set — convenient for dev with one SA.
+ *
+ * Auth is built lazily. Importing this module never touches env, so the
+ * backend boots even before the SA key is filled in.
  */
 
 import { google, type drive_v3 } from 'googleapis';
+import { Readable } from 'stream';
 import { config } from '../../../config/env';
-import { logger } from '../../../services/logger';
 
-// ── Types ────────────────────────────────────────────────────────────────────
-
-export type DriveFile = drive_v3.Schema$File;
-
-export interface ProjectFolder {
-  folderId: string;
-  folderName: string;
-  /** Files inside the folder — only fetched if needed for state extraction */
-  files?: DriveFile[];
+function readKey(): { keyFile: string } | { credentials: Record<string, unknown> } {
+  const path = config.GOOGLE_DRIVE_SA_KEY_PATH ?? config.GOOGLE_DIRECTORY_SA_KEY_PATH;
+  const b64 = config.GOOGLE_DRIVE_SA_KEY_B64 ?? config.GOOGLE_DIRECTORY_SA_KEY_B64;
+  if (path) return { keyFile: path };
+  if (b64) {
+    return {
+      credentials: JSON.parse(Buffer.from(b64, 'base64').toString('utf-8')) as Record<string, unknown>,
+    };
+  }
+  throw new Error(
+    'Google Drive sync requires GOOGLE_DRIVE_SA_KEY_PATH or GOOGLE_DRIVE_SA_KEY_B64 ' +
+      '(or falls back to GOOGLE_DIRECTORY_SA_KEY_* if that is set).',
+  );
 }
 
-// ── Auth ─────────────────────────────────────────────────────────────────────
-
-function buildAuth() {
-  // Reuses the same service account as directory sync (or a separate one).
-  // Scopes needed: drive.readonly (or drive.metadata.readonly for listing only)
-  const impersonateEmail = config.GOOGLE_DIRECTORY_IMPERSONATE_EMAIL;
-  if (!impersonateEmail) {
-    throw new Error('Google Drive sync requires GOOGLE_DIRECTORY_IMPERSONATE_EMAIL');
-  }
-
-  const keyFileOrCredentials = config.GOOGLE_DIRECTORY_SA_KEY_PATH
-    ? { keyFile: config.GOOGLE_DIRECTORY_SA_KEY_PATH }
-    : config.GOOGLE_DIRECTORY_SA_KEY_B64
-      ? {
-          credentials: JSON.parse(
-            Buffer.from(config.GOOGLE_DIRECTORY_SA_KEY_B64, 'base64').toString('utf-8'),
-          ) as Record<string, unknown>,
-        }
-      : null;
-
-  if (!keyFileOrCredentials) {
-    throw new Error('Google Drive sync requires a service account key');
-  }
-
+export function buildDriveAuth(): InstanceType<typeof google.auth.GoogleAuth> {
+  const keyMaterial = readKey();
+  const impersonate = config.GOOGLE_DRIVE_IMPERSONATE_EMAIL;
   return new google.auth.GoogleAuth({
-    ...keyFileOrCredentials,
+    ...keyMaterial,
     scopes: ['https://www.googleapis.com/auth/drive.readonly'],
-    clientOptions: { subject: impersonateEmail },
+    ...(impersonate ? { clientOptions: { subject: impersonate } } : {}),
   });
 }
 
-// ── Public API ───────────────────────────────────────────────────────────────
+let cachedClient: drive_v3.Drive | null = null;
+export function driveClient(): drive_v3.Drive {
+  if (cachedClient) return cachedClient;
+  const auth = buildDriveAuth();
+  cachedClient = google.drive({ version: 'v3', auth });
+  return cachedClient;
+}
+
+// ── Low-level helpers ────────────────────────────────────────────────────────
+
+/** Fields we always request on a file. */
+export const FILE_FIELDS =
+  'id,name,mimeType,parents,modifiedTime,size,lastModifyingUser(emailAddress,displayName)';
 
 /**
- * List project folders under a parent folder or shared drive.
- *
- * Stub — returns empty. Implement once the folder convention is defined.
+ * List immediate children of a folder, following pagination.
+ * Includes both files and subfolders. Trashed items excluded.
  */
-export async function listProjectFolders(
-  _parentFolderId: string,
-): Promise<ProjectFolder[]> {
-  logger.debug('Google Drive: listProjectFolders called (stub)');
-
-  // TODO: Implement with:
-  // const auth = buildAuth();
-  // const drive = google.drive({ version: 'v3', auth });
-  // const res = await drive.files.list({
-  //   q: `'${parentFolderId}' in parents and mimeType='application/vnd.google-apps.folder'`,
-  //   fields: 'files(id,name,modifiedTime)',
-  //   pageSize: 100,
-  // });
-
-  return [];
+export async function listFolderChildren(folderId: string): Promise<drive_v3.Schema$File[]> {
+  const client = driveClient();
+  const out: drive_v3.Schema$File[] = [];
+  let pageToken: string | undefined;
+  do {
+    const res = await client.files.list({
+      q: `'${folderId}' in parents and trashed = false`,
+      fields: `nextPageToken, files(${FILE_FIELDS})`,
+      pageSize: 200,
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true,
+      ...(pageToken ? { pageToken } : {}),
+    });
+    out.push(...(res.data.files ?? []));
+    pageToken = res.data.nextPageToken ?? undefined;
+  } while (pageToken);
+  return out;
 }
 
 /**
- * Read a "project state" sheet or file from a project folder.
- *
- * Stub — returns null. The shape of this depends entirely on the
- * convention we establish for how project state is recorded.
+ * Download file bytes via `files.get(alt=media)`.
+ * Use `exportMedia` instead for Google-native docs (Docs/Sheets/Slides).
  */
-export async function readProjectState(
-  _folderId: string,
-): Promise<Record<string, string> | null> {
-  logger.debug('Google Drive: readProjectState called (stub)');
-  return null;
+export async function downloadFileBuffer(fileId: string): Promise<Buffer> {
+  const client = driveClient();
+  const res = await client.files.get(
+    { fileId, alt: 'media', supportsAllDrives: true },
+    { responseType: 'stream' },
+  );
+  return streamToBuffer(res.data as Readable);
+}
+
+/**
+ * Export a Google-native doc to a specific mime type (e.g. text/plain for Docs).
+ */
+export async function exportFileBuffer(fileId: string, mimeType: string): Promise<Buffer> {
+  const client = driveClient();
+  const res = await client.files.export(
+    { fileId, mimeType },
+    { responseType: 'stream' },
+  );
+  return streamToBuffer(res.data as Readable);
+}
+
+async function streamToBuffer(stream: Readable): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as ArrayBuffer));
+  }
+  return Buffer.concat(chunks);
 }
