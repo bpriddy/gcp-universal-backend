@@ -18,6 +18,7 @@ import metadataImportRouter from './modules/integrations/staff-metadata-import/m
 import syncRunsRouter from './modules/integrations/sync-runs.router';
 import devRouter from './modules/dev/dev.router';
 import mcpRouter from './modules/mcp/mcp.router';
+import { attachWorkspaceToken } from './modules/workspace';
 import { getJwks as getJwksHandler } from './modules/auth/auth.controller';
 
 export function createApp(): express.Application {
@@ -53,7 +54,12 @@ export function createApp(): express.Application {
       },
       // Redact sensitive fields from request logs
       redact: {
-        paths: ['req.headers.authorization', 'req.body.idToken', 'req.body.refreshToken'],
+        paths: [
+          'req.headers.authorization',
+          'req.headers["x-workspace-token"]',
+          'req.body.idToken',
+          'req.body.refreshToken',
+        ],
         censor: '[REDACTED]',
       },
     }),
@@ -66,6 +72,12 @@ export function createApp(): express.Application {
 
   // ── Global rate limiter ───────────────────────────────────────────────────
   app.use(generalLimiter);
+
+  // ── Workspace pass-through token ──────────────────────────────────────────
+  // Extracts `X-Workspace-Token` (a short-lived Google access token the client
+  // already holds) onto req. Permissive: never 401s — routes decide whether
+  // to require it via resolveWorkspaceCreds.
+  app.use(attachWorkspaceToken);
 
   // ── Routes ────────────────────────────────────────────────────────────────
   app.use('/health', healthRouter);
