@@ -12,6 +12,24 @@ Content that stays elsewhere:
 - Documents, decks, assets → Google Drive (referenced, not imported)
 - Asset management → AEM (queried at request time, not synced)
 
+## Auth Model (2026-04-16)
+
+Drive sync is **service-account-only by design** and does NOT use the
+`src/modules/workspace/` pass-through helpers (`resolveWorkspaceCreds`).
+
+- Runs in a background worker — no HTTP user in the request
+- The SA must be explicitly shared into each account/campaign folder
+- The review flow (`drive.review.ts`) operates on already-extracted,
+  already-stored proposals — no Drive API call at review time
+
+Keys are read from `GOOGLE_DRIVE_SA_KEY_PATH` / `GOOGLE_DRIVE_SA_KEY_B64`
+or fall back to `GOOGLE_DIRECTORY_SA_KEY_*` so a single SA can serve both
+syncs in dev.
+
+If a future endpoint needs per-user Drive access ("list files from MY
+Drive"), that endpoint would use `resolveWorkspaceCreds` instead — see
+[AUTH-FLOW.md § Path 4](../../../../docs/AUTH-FLOW.md#path-4-workspace-pass-through-client-owned-oauth).
+
 ## Design Principles
 
 1. **Sparse output** — a sync run should produce a handful of

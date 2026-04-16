@@ -179,10 +179,13 @@ gcp-universal-backend/
 │   │   ├── health/                   # /health (readiness) + /health/live (liveness)
 │   │   ├── integrations/
 │   │   │   ├── google-directory/     # Google Workspace directory sync engine
+│   │   │   ├── google-drive/         # Drive LLM extraction + review workflow
 │   │   │   ├── sync-run.service.ts   # Shared sync run logging service
 │   │   │   └── sync-runs.router.ts   # Sync run API endpoints
+│   │   ├── mail/                     # Mail driver (console | Mailgun)
 │   │   ├── mcp/                      # MCP server for AI agent tools
-│   │   └── org/                      # Staff, accounts, campaigns, access grants
+│   │   ├── org/                      # Staff, accounts, campaigns, access grants
+│   │   └── workspace/                # X-Workspace-Token pass-through + SA fallback
 │   ├── services/
 │   │   ├── google.service.ts         # Google ID token verification
 │   │   ├── jwt.service.ts            # RS256 sign/verify + JWKS export

@@ -4,7 +4,14 @@
 
 GUB uses RS256 asymmetric JWT signing. The backend holds the private key;
 downstream services verify tokens using the public JWKS endpoint. There are
-three authentication paths depending on the client type.
+three authentication paths depending on the client type, plus a separate
+pass-through layer for Google Workspace API calls (Path 4).
+
+**Identity vs. Workspace access are separate concerns:**
+- Paths 1–3 establish *who* the user is (GUB JWT).
+- Path 4 carries *what the user can do in Google Workspace* (Gmail,
+  Calendar, per-user Drive) on behalf of the client app that already holds
+  the user's refresh token. GUB never stores Google refresh tokens.
 
 ## Path 1: Browser Client (Frontend SDK)
 
@@ -184,6 +191,94 @@ Client App              GUB Backend              Google
 OAuth clients are registered via the admin CMS or the admin-only
 API endpoints (`POST /auth/google/broker/clients`).
 
+## Path 4: Workspace Pass-Through (Client-Owned OAuth)
+
+Used for GUB endpoints that need to call Google Workspace APIs on behalf of
+a specific user (Gmail, Calendar, per-user Drive, etc.). The client app
+owns the Workspace OAuth consent flow and refresh tokens; GUB receives only
+a short-lived access token per request.
+
+```
+Client app                              GUB Backend                Google Workspace
+  │                                         │                              │
+  │──[1] OAuth consent flow with Google ───────────────────────────────────▶│
+  │◀─────[2] access_token + refresh_token ─────────────────────────────────│
+  │       (client stores refresh_token)     │                              │
+  │                                         │                              │
+  │──[3] Request with two headers──────────▶│                              │
+  │     Authorization: Bearer <GUB JWT>     │                              │
+  │     X-Workspace-Token: <Google access>  │                              │
+  │                                         │                              │
+  │                                         │──[4] Verify GUB JWT           │
+  │                                         │──[5] resolveWorkspaceCreds    │
+  │                                         │──[6] Call Workspace with     │
+  │                                         │      X-Workspace-Token──────▶│
+  │                                         │◀──[7] Workspace response─────│
+  │                                         │                              │
+  │◀─[8] GUB response──────────────────────│                              │
+```
+
+**Why pass-through instead of GUB owning the flow:**
+- Refresh tokens stay with the client app that obtained consent
+- GUB never persists Google credentials (smaller blast radius)
+- Different client apps can request different Workspace scopes without
+  coordinating through GUB
+- GUB stays a stateless identity + org-data gateway
+
+**Middleware wiring** (`src/app.ts`):
+- `attachWorkspaceToken` extracts `X-Workspace-Token` and attaches it to
+  `req.workspaceAccessToken`. Permissive — never 401s on its own.
+- `req.headers["x-workspace-token"]` is in the pino-http redact list; the
+  token never appears in application logs.
+- CORS `allowedHeaders` includes `X-Workspace-Token` for browser preflight.
+
+**Route usage:**
+
+```ts
+// User-required endpoint (per-user Gmail/Calendar/Drive)
+import { resolveWorkspaceCreds, buildGoogleAuthClient } from '../workspace';
+
+router.get('/my-calendars', authenticate, async (req, res) => {
+  const creds = resolveWorkspaceCreds(req); // throws 401 if no X-Workspace-Token
+  const auth = buildGoogleAuthClient(creds, {
+    scopes: ['https://www.googleapis.com/auth/calendar.readonly'],
+  });
+  const calendar = google.calendar({ version: 'v3', auth });
+  ...
+});
+
+// Admin/cron endpoint (service-account fallback allowed)
+router.post('/admin/run-sync', authenticate, requireAdmin, async (req, res) => {
+  const creds = resolveWorkspaceCreds(req, { allowServiceAccountFallback: true });
+  const auth = buildGoogleAuthClient(creds, {
+    scopes: ['https://www.googleapis.com/auth/directory.readonly'],
+    impersonate: 'sync-bot@example.com',
+  });
+  ...
+});
+```
+
+Fail-closed by default: `allowServiceAccountFallback: false` means "this
+endpoint requires a user's Workspace token; no silent cross-over to the
+service account."
+
+**What GUB deliberately does NOT do:**
+- Perform Workspace OAuth consent
+- Store Google refresh tokens
+- Cache Workspace access tokens across requests
+
+**Service-account exceptions (by design):**
+- Google Directory sync (`directory.client.ts`) — domain-wide read of all
+  staff; no user in the request
+- Google Drive sync (`drive.client.ts`) — batch scan over shared folders;
+  SA is explicitly added as a viewer on each folder
+
+These two modules deliberately do not use `resolveWorkspaceCreds`. They run
+in the background with no HTTP request context and are SA-only.
+
+See also: `src/modules/workspace/` (the module) and the internal
+architecture doc `project_workspace_passthrough.md`.
+
 ## JWT Payload Structure
 
 ```json
@@ -223,6 +318,7 @@ person has ever logged in.
 | Refresh token storage | SHA-256 hash only; raw token transmitted once |
 | Reuse detection | Rotated token reuse revokes entire family |
 | Rate limiting | 10 req/15min on auth, 100 req/15min global |
-| CORS | Origin whitelist from env var |
+| CORS | Origin whitelist from env var (+ `X-Workspace-Token` allowed header) |
 | Secret management | GCP Secret Manager, injected at runtime |
 | Container security | Non-root user (`nodeuser`, uid 1001) |
+| Workspace tokens | Pass-through only — never stored, redacted in logs, fail-closed by route |

@@ -52,10 +52,15 @@ via the public JWKS endpoint with no callback required.
 - OAuth 2.0 broker for headless clients (server-side flow)
 - Google access token exchange endpoint (for ADK agent)
 - Staff metadata and resourcing search
-- Data sync engine — Google Directory staff sync (active), with Workfront,
-  Google Drive, and staff metadata import planned
+- Data sync engine — Google Directory staff sync (active), Google Drive LLM
+  extraction (active), with Workfront and staff metadata import planned
+- Drive review workflow — notify + magic-link + apply for Drive proposals
 - Sync run logging with structured details and human-readable summaries
 - Row-level security via AsyncLocalStorage + PostgreSQL `set_config`
+- Workspace pass-through auth — clients pass Google access tokens via
+  `X-Workspace-Token`; GUB never stores Workspace refresh tokens. Service
+  account fallback on backend/admin/cron paths only (see
+  [AUTH-FLOW.md § Path 4](./AUTH-FLOW.md#path-4-workspace-pass-through-client-owned-oauth))
 
 **Tech stack:** Express, Prisma ORM, jose (JWT), google-auth-library,
 Zod validation, Pino structured logging, Helmet security headers.
