@@ -113,6 +113,12 @@ const EnvSchema = z.object({
   // Proposal TTL in days. Expired proposals are swept by Phase 6's review flow.
   DRIVE_PROPOSAL_TTL_DAYS: z.string().default('14').transform(Number),
 
+  // Base URL of gub-admin (frontend). Drive notify service uses this to build
+  // the magic-link URL embedded in review emails:
+  //   ${GUB_ADMIN_BASE_URL}/drive-review/${reviewToken}
+  // Dev default points at Vite (5173).
+  GUB_ADMIN_BASE_URL: z.string().url().default('http://localhost:5173'),
+
   // ── Mail ───────────────────────────────────────────────────────────────────
   // Driver selection. In dev, 'console' logs the rendered email to stdout
   // instead of sending — safe default. In production, set to 'mailgun'.

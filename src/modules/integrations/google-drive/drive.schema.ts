@@ -143,6 +143,41 @@ export function buildCampaignCurrentState(c: Pick<
   };
 }
 
+// ── Apply/write specs (used by drive.review on approval) ───────────────────
+//
+// Each writable field tells the approval code:
+//   - entityColumn: the Prisma model property to update on the entity
+//   - changeKind:   which value_* column on *_changes receives the value
+//                   ('text' covers free text + enums + decimals serialized as
+//                    strings; 'uuid' maps to value_uuid; 'date' to value_date)
+//
+// Keeping this alongside the validators so adding a new writable field remains
+// a one-file edit.
+
+export type ChangeValueKind = 'text' | 'uuid' | 'date';
+
+export interface FieldWriteSpec {
+  entityColumn: string;
+  changeKind: ChangeValueKind;
+}
+
+export const ACCOUNT_FIELD_WRITE: Record<AccountWritableField, FieldWriteSpec> = {
+  status: { entityColumn: 'status', changeKind: 'text' },
+  account_exec_staff_id: { entityColumn: 'accountExecStaffId', changeKind: 'uuid' },
+  industry: { entityColumn: 'industry', changeKind: 'text' },
+  primary_contact_name: { entityColumn: 'primaryContactName', changeKind: 'text' },
+  primary_contact_email: { entityColumn: 'primaryContactEmail', changeKind: 'text' },
+  notes: { entityColumn: 'notes', changeKind: 'text' },
+};
+
+export const CAMPAIGN_FIELD_WRITE: Record<CampaignWritableField, FieldWriteSpec> = {
+  status: { entityColumn: 'status', changeKind: 'text' },
+  budget: { entityColumn: 'budget', changeKind: 'text' }, // decimal audit as string
+  awarded_at: { entityColumn: 'awardedAt', changeKind: 'date' },
+  live_at: { entityColumn: 'liveAt', changeKind: 'date' },
+  ends_at: { entityColumn: 'endsAt', changeKind: 'date' },
+};
+
 // ── Utilities shared by interpret/distill ───────────────────────────────────
 
 /**

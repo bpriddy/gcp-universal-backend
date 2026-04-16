@@ -8,7 +8,10 @@
  *   3. For every account with drive_folder_id set — scanEntity() on it.
  *      Delta snapshots skip unchanged files automatically.
  *   4. For every campaign with drive_folder_id set — scanEntity() on it.
- *   5. Finalize the sync_run: status=success/failed, durationMs, summary JSON.
+ *   5. notifyReviewers() — group new proposals by owner, email each a magic
+ *      link. Only proposals created in this run (not-yet-notified) get picked
+ *      up. Failure here does not fail the run (proposals remain in DB).
+ *   6. Finalize the sync_run: status=success/failed, durationMs, summary JSON.
  *
  * Pacing: env-tunable delays between entities so a cold first run doesn't
  * burn a day's Gemini quota in 10 minutes. DRIVE_DELAY_BETWEEN_ACCOUNTS_MS
@@ -22,6 +25,7 @@ import { config } from '../../../config/env';
 import { prisma } from '../../../config/database';
 import { logger } from '../../../services/logger';
 import { discoverNewEntities } from './drive.discover';
+import { notifyReviewers } from './drive.notify';
 import { scanEntity, type ScanEntityResult } from './drive.orchestrator';
 
 export interface RunFullSyncResult {
@@ -36,6 +40,11 @@ export interface RunFullSyncResult {
   proposalsCreated: number;
   notesWritten: number;
   ambiguousWritten: number;
+  notify: {
+    ownersEmailed: number;
+    proposalsNotified: number;
+    orphansLogged: number;
+  };
   errors: number;
   durationMs: number;
 }
@@ -86,6 +95,9 @@ async function executeFullSync(syncRunId: string): Promise<RunFullSyncResult> {
     proposalsCreated: 0,
     notesWritten: 0,
     ambiguousWritten: 0,
+    ownersEmailed: 0,
+    proposalsNotified: 0,
+    orphansLogged: 0,
     errors: 0,
   };
 
@@ -139,6 +151,22 @@ async function executeFullSync(syncRunId: string): Promise<RunFullSyncResult> {
       await pace(config.DRIVE_DELAY_BETWEEN_CAMPAIGNS_MS);
     }
 
+    // ── Phase 4: Notify reviewers ────────────────────────────────────────
+    // Scoped to this run's proposals — proposals from prior runs that still
+    // sit unnotified (e.g. after a past dispatch failure) are picked up by
+    // POST /notify, not by each run, to avoid unexpected re-notification
+    // surges. Failure here is logged and counted but does not fail the run:
+    // proposals stay in DB and the admin can retry via POST /notify.
+    try {
+      const notify = await notifyReviewers({ syncRunId });
+      totals.ownersEmailed = notify.ownersEmailed;
+      totals.proposalsNotified = notify.proposalsNotified;
+      totals.orphansLogged = notify.orphansLogged;
+    } catch (err) {
+      totals.errors++;
+      logger.error({ err, syncRunId }, '[drive.runner] notifyReviewers failed');
+    }
+
     const durationMs = Date.now() - startedAt;
     const summary = {
       discover: {
@@ -151,6 +179,11 @@ async function executeFullSync(syncRunId: string): Promise<RunFullSyncResult> {
       proposalsCreated: totals.proposalsCreated,
       notesWritten: totals.notesWritten,
       ambiguousWritten: totals.ambiguousWritten,
+      notify: {
+        ownersEmailed: totals.ownersEmailed,
+        proposalsNotified: totals.proposalsNotified,
+        orphansLogged: totals.orphansLogged,
+      },
       errors: totals.errors,
       durationMs,
     };
@@ -185,6 +218,11 @@ async function executeFullSync(syncRunId: string): Promise<RunFullSyncResult> {
       proposalsCreated: totals.proposalsCreated,
       notesWritten: totals.notesWritten,
       ambiguousWritten: totals.ambiguousWritten,
+      notify: {
+        ownersEmailed: totals.ownersEmailed,
+        proposalsNotified: totals.proposalsNotified,
+        orphansLogged: totals.orphansLogged,
+      },
       errors: totals.errors,
       durationMs,
     };

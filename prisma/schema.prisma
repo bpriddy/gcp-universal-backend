@@ -736,6 +736,10 @@ model DriveChangeProposal {
   reviewerEmail       String?   @map("reviewer_email")
   reviewerStaffId     String?   @map("reviewer_staff_id") @db.Uuid
   expiresAt           DateTime  @map("expires_at") @db.Timestamptz
+  // Null until the notify service emails the reviewer. Set once per proposal;
+  // if the same reviewer also owns later proposals we'll batch those into
+  // their own email when they accumulate.
+  notifiedAt          DateTime? @map("notified_at") @db.Timestamptz
   decidedAt           DateTime? @map("decided_at") @db.Timestamptz
   decidedBy           String?   @map("decided_by") @db.Uuid
   appliedChangeId     String?   @map("applied_change_id") @db.Uuid
@@ -755,5 +759,6 @@ model DriveChangeProposal {
   @@index([proposalGroupId])
   @@index([sourceDriveFolderId])
   @@index([kind, state])
+  @@index([reviewerStaffId, state, notifiedAt])
   @@map("drive_change_proposals")
 }
