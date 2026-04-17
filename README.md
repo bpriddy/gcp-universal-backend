@@ -2,6 +2,39 @@
 
 A universal auth gateway for GCP-hosted applications. Accepts a Google OAuth token from the frontend, validates the user against a PostgreSQL users table, and issues RS256-signed JWTs that carry per-application permissions. Downstream apps verify tokens independently using the public JWKS endpoint — no callback to this service required.
 
+> **POC Status:** This system is a working proof of concept that demonstrates
+> end-to-end functionality across three repos. See the [docs/](./docs/) folder
+> for comprehensive documentation intended for vendor onboarding.
+
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [Architecture Overview](./docs/ARCHITECTURE.md) | System map, three repos, data model, GCP resources |
+| [Authentication Flow](./docs/AUTH-FLOW.md) | All auth paths: browser, Agentspace/ADK, OAuth broker |
+| [Deployment Guide](./docs/DEPLOYMENT.md) | Step-by-step GCP setup with validated commands |
+| [Agentspace Integration](./docs/AGENTSPACE-INTEGRATION.md) | ADK agent → Discovery Engine → Agentspace |
+| [Data Sync](./docs/DATA-SYNC.md) | Google Directory sync, sync runs, change log diffs |
+| [Known Issues](./docs/KNOWN-ISSUES.md) | Platform bugs, workarounds, cleanup items |
+| [Production Checklist](./docs/PRODUCTION-CHECKLIST.md) | What a vendor needs to harden for production |
+| [Commands Reference](./docs/COMMANDS-REFERENCE.md) | Copy-paste validated commands for all operations |
+
+### Related Repositories
+
+| Repo | Purpose |
+|------|---------|
+| [gub-agent](https://github.com/bpriddy/gub-agent) | ADK agent for Vertex AI Agent Engine / Agentspace |
+| [gub-admin](https://github.com/bpriddy/gub-admin) | Next.js admin CMS for data management |
+
+### Current Dev URLs
+
+| Service | URL |
+|---------|-----|
+| GUB Backend | `https://gcp-universal-backend-dev-843516467880.us-central1.run.app` |
+| GUB Admin CMS | `https://gub-admin-dev-843516467880.us-central1.run.app` |
+| OAuth Relay | `https://us-central1-os-test-491819.cloudfunctions.net/oauth-relay` |
+| JWKS | `https://gcp-universal-backend-dev-843516467880.us-central1.run.app/.well-known/jwks.json` |
+
 ---
 
 ## Using this in your app (start here)
@@ -143,7 +176,16 @@ gcp-universal-backend/
 │   │   └── errorHandler.ts           # Centralized error → HTTP response mapping
 │   ├── modules/
 │   │   ├── auth/                     # Login, refresh, logout, JWKS endpoints
-│   │   └── health/                   # /health (readiness) + /health/live (liveness)
+│   │   ├── health/                   # /health (readiness) + /health/live (liveness)
+│   │   ├── integrations/
+│   │   │   ├── google-directory/     # Google Workspace directory sync engine
+│   │   │   ├── google-drive/         # Drive LLM extraction + review workflow
+│   │   │   ├── sync-run.service.ts   # Shared sync run logging service
+│   │   │   └── sync-runs.router.ts   # Sync run API endpoints
+│   │   ├── mail/                     # Mail driver (console | Mailgun)
+│   │   ├── mcp/                      # MCP server for AI agent tools
+│   │   ├── org/                      # Staff, accounts, campaigns, access grants
+│   │   └── workspace/                # X-Workspace-Token pass-through + SA fallback
 │   ├── services/
 │   │   ├── google.service.ts         # Google ID token verification
 │   │   ├── jwt.service.ts            # RS256 sign/verify + JWKS export

@@ -3,8 +3,8 @@
  * personally identifiable information (PII).
  *
  * This is the single source of truth used by:
- *   - okta.sync.ts     — sets valueIsPii = true when writing change rows
- *   - anonymise route  — filters rows to scrub on GDPR Art. 17 erasure
+ *   - directory.sync.ts — sets valueIsPii = true when writing change rows
+ *   - anonymise route   — filters rows to scrub on GDPR Art. 17 erasure
  *
  * Property names use snake_case to match the string values stored in the
  * staff_changes.property column.

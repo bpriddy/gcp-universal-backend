@@ -5,6 +5,9 @@ dist/
 keys/*.pem
 keys/*.key
 *.pem
+secrets/
 coverage/
 .nyc_output/
 prisma/migrations/*/migration_lock.toml
+.DS_Store
+.dev-logs/

@@ -17,7 +17,7 @@ export const corsOptions: CorsOptions = {
     }
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Authorization', 'Content-Type', 'X-Request-ID'],
+  allowedHeaders: ['Authorization', 'Content-Type', 'X-Request-ID', 'X-Workspace-Token'],
   exposedHeaders: ['X-Request-ID'],
   credentials: true,
   maxAge: 86_400, // Cache preflight response for 24 hours

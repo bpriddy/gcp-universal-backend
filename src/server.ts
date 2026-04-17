@@ -1,7 +1,23 @@
 import { createApp } from './app';
 import { config } from './config/env';
-import { initializeAppDbPools, closeAllPools } from './config/database';
+import { initializeAppDbPools, closeAllPools, prisma } from './config/database';
 import { logger } from './services/logger';
+import { checkImmutabilityTriggers } from './config/trigger-check';
+
+async function connectWithRetry(retries = 5, delayMs = 2000): Promise<void> {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      await prisma.$connect();
+      logger.info('Database connected');
+      return;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.warn({ attempt, retries, message }, 'Database connect failed, retrying...');
+      if (attempt === retries) throw err;
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+}
 
 async function main(): Promise<void> {
   // Initialize application database connection pools
@@ -9,6 +25,7 @@ async function main(): Promise<void> {
 
   const app = createApp();
 
+  // Start listening immediately so Cloud Run health checks pass
   const server = app.listen(config.PORT, () => {
     logger.info(
       {
@@ -18,6 +35,16 @@ async function main(): Promise<void> {
       },
       'gcp-universal-backend started',
     );
+
+    // Connect to DB after the server is listening (Cloud SQL socket needs a moment)
+    connectWithRetry()
+      .then(() => checkImmutabilityTriggers())
+      .catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        const stack = err instanceof Error ? err.stack : undefined;
+        logger.error({ message, stack }, 'Database connection failed after retries — exiting');
+        process.exit(1);
+      });
   });
 
   // ── Graceful shutdown ──────────────────────────────────────────────────────
@@ -46,7 +73,11 @@ async function main(): Promise<void> {
   process.on('SIGINT', () => void shutdown('SIGINT'));
 
   process.on('unhandledRejection', (reason) => {
-    logger.error({ reason }, 'Unhandled promise rejection');
+    logger.error({
+      reason,
+      errorMessage: reason instanceof Error ? reason.message : String(reason),
+      errorStack: reason instanceof Error ? reason.stack : undefined,
+    }, 'Unhandled promise rejection');
     process.exit(1);
   });
 

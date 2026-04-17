@@ -1,0 +1,42 @@
+###############################################################################
+# Dev environment
+###############################################################################
+
+project_id  = "os-test-491819"
+region      = "us-central1"
+environment = "dev"
+
+backend_service_name    = "gcp-universal-backend-dev"
+backend_service_url     = "https://gcp-universal-backend-dev-843516467880.us-central1.run.app"
+backend_service_account = "sa-gcp-universal-backend-dev@os-test-491819.iam.gserviceaccount.com"
+
+# ── Sync schedules ───────────────────────────────────────────────────────────
+# Add entries here as new sync engines come online.
+# Disabled sources are excluded from Cloud Scheduler entirely (no paused job).
+
+sync_schedules = {
+  google_directory = {
+    description = "Google Workspace directory → staff sync"
+    schedule    = "0 6 * * *"           # Daily at 6:00 AM
+    time_zone   = "America/New_York"
+    endpoint    = "/integrations/google-directory/cron"
+    enabled     = true
+    timeout     = "300s"
+  }
+
+  # Uncomment as engines are built:
+  #
+  # workfront = {
+  #   description = "Adobe Workfront project data sync"
+  #   schedule    = "0 7 * * *"
+  #   time_zone   = "America/New_York"
+  #   endpoint    = "/integrations/workfront/cron"
+  #   enabled     = false
+  #   timeout     = "600s"
+  # }
+}
+
+# ── Cleanup ──────────────────────────────────────────────────────────────────
+
+cleanup_schedule  = "0 2 * * *"     # 2:00 AM UTC daily
+cleanup_time_zone = "UTC"
