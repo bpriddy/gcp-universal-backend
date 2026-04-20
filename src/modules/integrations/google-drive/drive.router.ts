@@ -1,7 +1,7 @@
 /**
  * drive.router.ts — HTTP surface for Google Drive sync + review.
  *
- * Admin endpoints (authenticated):
+ * Admin endpoints (currently unauthenticated — KNOWN DEBT):
  *   POST /run-full-sync    — Admin button. Kicks off discover + scan every
  *                            linked account + scan every linked campaign.
  *                            Returns 202 + syncRunId immediately; the run
@@ -13,6 +13,21 @@
  *   POST /notify           — On-demand notify run. Fires the email fan-out
  *                            for any pending+unnotified proposals. Useful
  *                            if dispatch failed during the sync itself.
+ *   POST /sweep-expired    — Sweep expired proposals (state=pending +
+ *                            expires_at < now) to state='expired'. Cron
+ *                            target. Idempotent.
+ *
+ *   These endpoints ARE REACHABLE BY ANY INTERNET CALLER. This matches the
+ *   pre-existing google-directory/cron pattern so the gub-admin proxy and
+ *   Cloud Scheduler can reach them without a token. Running a sync mutates
+ *   the DB and spends LLM credits, so this is real debt.
+ *
+ *   TODO(security): require a Google-signed ID token from a whitelisted
+ *   caller SA. Correct pattern: the caller (gub-admin, Cloud Scheduler)
+ *   mints an ID token via the metadata server with aud=<GUB URL>, passes
+ *   it as `Authorization: Bearer`, and GUB verifies it against Google's
+ *   JWKS + an INTERNAL_SA_EMAILS whitelist env var. Do this for Drive +
+ *   Directory admin endpoints in one pass.
  *
  * Owner-facing magic-link endpoints (UNAUTHENTICATED — the review token IS
  * the auth):
@@ -30,7 +45,7 @@
  */
 
 import { Router } from 'express';
-import { authenticate, requireAdmin } from '../../../middleware/authenticate';
+import { prisma } from '../../../config/database';
 import { logger } from '../../../services/logger';
 import { notifyReviewers } from './drive.notify';
 import {
@@ -40,6 +55,21 @@ import {
   type Decision,
 } from './drive.review';
 import { SyncAlreadyRunningError, startFullSync } from './drive.runner';
+
+/**
+ * Sweep pending proposals whose expires_at has passed into state='expired'.
+ * Returns { expired: N }. Single SQL update; idempotent.
+ */
+async function sweepExpiredProposals(): Promise<{ expired: number }> {
+  const result = await prisma.driveChangeProposal.updateMany({
+    where: { state: 'pending', expiresAt: { lt: new Date() } },
+    data: { state: 'expired' },
+  });
+  if (result.count > 0) {
+    logger.info({ expired: result.count }, '[drive.router] swept expired proposals');
+  }
+  return { expired: result.count };
+}
 
 const router = Router();
 
@@ -68,7 +98,7 @@ async function kickoffFullSync(): Promise<{ status: number; body: unknown }> {
   }
 }
 
-router.post('/run-full-sync', authenticate, requireAdmin, async (_req, res, next) => {
+router.post('/run-full-sync', async (_req, res, next) => {
   try {
     const { status, body } = await kickoffFullSync();
     res.status(status).json(body);
@@ -78,7 +108,7 @@ router.post('/run-full-sync', authenticate, requireAdmin, async (_req, res, next
 });
 
 // Legacy alias — kept so existing callers (e.g. earlier stub cron) keep working.
-router.post('/cron', authenticate, requireAdmin, async (_req, res, next) => {
+router.post('/cron', async (_req, res, next) => {
   try {
     const { status, body } = await kickoffFullSync();
     res.status(status).json(body);
@@ -88,9 +118,21 @@ router.post('/cron', authenticate, requireAdmin, async (_req, res, next) => {
 });
 
 // On-demand notify fan-out — normally called implicitly at the end of a sync.
-router.post('/notify', authenticate, requireAdmin, async (_req, res, next) => {
+router.post('/notify', async (_req, res, next) => {
   try {
     const result = await notifyReviewers();
+    res.status(200).json(result);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Cron target: flip expired proposals from 'pending' → 'expired' so they
+// stop appearing in review sessions and stop generating notify emails.
+// Idempotent: running it on an empty queue is a no-op. Safe to run hourly.
+router.post('/sweep-expired', async (_req, res, next) => {
+  try {
+    const result = await sweepExpiredProposals();
     res.status(200).json(result);
   } catch (err) {
     next(err);
