@@ -130,11 +130,41 @@ import { GUBLoginButton } from 'gcp-universal-backend/sdk/frontend'
 | `user.isAdmin` | `boolean` | Superuser flag |
 | `user.permissions` | `TokenPermission[]` | App-level permissions |
 | `isAuthenticated` | `boolean` | True when logged in |
-| `isLoading` | `boolean` | True during login/refresh |
+| `isLoading` | `boolean` | True during any auth op (restore, login, refresh, logout). Initialized to `true` on first render when `initialRefreshToken` is present, so `!isLoading && !isAuthenticated` safely means "user is logged out" without a false-positive flash on reload. |
+| `isRestoring` | `boolean` | True only while the initial-mount session restoration is in flight. Becomes false after the restore settles; does not flip true again later. Use this to distinguish a page-reload session check from an interactive login. |
 | `login()` | `() => void` | Triggers Google sign-in |
 | `logout()` | `() => Promise<void>` | Clears session |
 | `fetch()` | `(url, init?) => Promise<Response>` | Authenticated fetch |
 | `accessToken` | `string \| null` | Raw JWT (prefer fetch()) |
+
+### Session restoration pattern
+
+If you pass `initialRefreshToken` to `GUBProvider` from a server-side cookie,
+the provider will attempt to restore the session on mount. During that window
+`isLoading` is `true` (so a naive `if (!isLoading && !isAuthenticated) redirect()`
+won't fire prematurely). The provider signals failure via `onTokensChange(null)`:
+
+```tsx
+<GUBProvider
+  config={{ gubUrl: '...', googleClientId: '...' }}
+  initialRefreshToken={sessionCookie.refreshToken}
+  onTokensChange={(tokens) => {
+    if (tokens === null) {
+      // Restore failed (server rejected the refresh token) OR user logged out.
+      // Clear your cookie so the next reload doesn't loop on a bad token.
+      clearSessionCookie();
+    } else {
+      // Persist the fresh pair so reload picks them up next time.
+      saveSessionCookie(tokens);
+    }
+  }}
+>
+  <App />
+</GUBProvider>
+```
+
+Transient network failures during restoration do NOT trigger `onTokensChange(null)` —
+the cookie stays intact, and the next reload tries again.
 
 ---
 

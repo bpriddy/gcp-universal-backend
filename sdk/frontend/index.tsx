@@ -50,8 +50,27 @@ export interface GUBConfig {
 export interface GUBContextValue {
   /** Authenticated user, or null if not logged in */
   user: GUBUser | null;
-  /** True while login / token refresh is in progress */
+  /**
+   * True while any auth operation is in progress — covers initial session
+   * restoration (when `initialRefreshToken` was provided), interactive login,
+   * and logout.
+   *
+   * NOTE: `isLoading` is initialized to `true` on the very first render if
+   * an `initialRefreshToken` was passed. This is intentional: without it,
+   * consumers that do `if (!isLoading && !isAuthenticated) redirectToLogin()`
+   * would kick the user to login for one frame on every page reload, before
+   * the restore effect has a chance to run.
+   */
   isLoading: boolean;
+  /**
+   * True only while the initial-mount session restoration is in flight
+   * (i.e. exchanging `initialRefreshToken` for fresh tokens). Becomes
+   * false after the restore attempt settles, success or failure, and does
+   * NOT flip true again during subsequent silent refreshes or interactive
+   * logins. Use this when you need to distinguish "first-load session
+   * check" from "user clicked Sign In".
+   */
+  isRestoring: boolean;
   /** True if the user is authenticated */
   isAuthenticated: boolean;
   /** Initiate Google OAuth login flow via One Tap or popup */
@@ -146,9 +165,17 @@ export interface GUBProviderProps {
    */
   initialRefreshToken?: string | null;
   /**
-   * Called whenever tokens change: after login, after silent refresh, and on
-   * logout (with null). Use this to persist tokens to a server-side session
-   * store so they survive page reloads.
+   * Called whenever tokens change:
+   *   - after interactive login:          ({ accessToken, refreshToken })
+   *   - after silent refresh:             ({ accessToken, refreshToken })
+   *   - after logout:                     (null)
+   *   - after server rejects `initialRefreshToken` during restoration:  (null)
+   *
+   * Use this to persist tokens to a server-side session store so they
+   * survive page reloads. The `null` callback on restoration failure is
+   * your cue to clear the stale cookie so the next reload doesn't loop.
+   * Transient network failures during restoration do NOT trigger the
+   * null callback — the token may still be valid.
    */
   onTokensChange?: (tokens: { accessToken: string; refreshToken: string } | null) => void;
 }
@@ -164,7 +191,13 @@ export interface GUBProviderProps {
 export function GUBProvider({ config, children, initialRefreshToken, onTokensChange }: GUBProviderProps) {
   const [user, setUser] = useState<GUBUser | null>(null);
   const [accessToken, setAccessToken] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
+  // Initialize to `true` when an initial refresh token is present. The restore
+  // effect runs after first render; without this, consumers doing
+  //   if (!isLoading && !isAuthenticated) redirectToLogin()
+  // would redirect on the very first frame of every reload even when a
+  // valid saved session is about to be restored.
+  const [isLoading, setIsLoading] = useState<boolean>(() => Boolean(initialRefreshToken));
+  const [isRestoring, setIsRestoring] = useState<boolean>(() => Boolean(initialRefreshToken));
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const baseUrl = config.gubUrl.replace(/\/$/, '');
 
@@ -315,11 +348,19 @@ export function GUBProvider({ config, children, initialRefreshToken, onTokensCha
   // Restore session from an initial refresh token (e.g. from a server-side
   // session store). Runs once on mount — if the token is valid, exchanges it
   // for fresh access + refresh tokens via the GUB /auth/refresh endpoint.
+  //
+  // If the server returns a non-OK response (revoked/expired/reused token),
+  // we fire `onTokensChange(null)` so the consumer can clear its server-side
+  // cookie store — otherwise the next page reload would try the same bad
+  // token again. We deliberately do NOT clear on a `catch` (transient
+  // network failure): better to try again next reload than to force a
+  // re-login because the network blipped.
   const hasRestoredRef = useRef(false);
   useEffect(() => {
     if (hasRestoredRef.current || !initialRefreshToken) return;
     hasRestoredRef.current = true;
-    setIsLoading(true);
+    // isLoading + isRestoring were already initialized to true in useState
+    // when initialRefreshToken was present; no need to set them here.
     (async () => {
       try {
         const res = await window.fetch(`${baseUrl}/auth/refresh`, {
@@ -330,11 +371,16 @@ export function GUBProvider({ config, children, initialRefreshToken, onTokensCha
         if (res.ok) {
           const data = await res.json();
           storeTokens(data.accessToken, data.refreshToken);
+        } else {
+          // Server rejected the refresh token. Signal the consumer to clear
+          // its stale cookie so subsequent reloads don't loop on a bad token.
+          onTokensChangeRef.current?.(null);
         }
       } catch {
-        // Refresh failed — user will need to sign in manually
+        // Network failure — don't clear the cookie; next reload can retry.
       } finally {
         setIsLoading(false);
+        setIsRestoring(false);
       }
     })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -352,6 +398,7 @@ export function GUBProvider({ config, children, initialRefreshToken, onTokensCha
       value={{
         user,
         isLoading,
+        isRestoring,
         isAuthenticated: user !== null,
         login,
         logout,
