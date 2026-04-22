@@ -81,16 +81,34 @@ export function Dashboard({ auth }: Props) {
         <section style={styles.section}>
           <h2 style={styles.sectionTitle}>Org Data</h2>
           <p style={styles.sectionDesc}>
-            Each request below sends your JWT Bearer token. The backend checks your
-            grants and returns only the data you have access to.
-            Try an endpoint you haven't been granted — you'll get a{' '}
-            <code>403 FORBIDDEN</code>.
+            Each request below sends your JWT Bearer token. The backend checks your{' '}
+            <code>access_grants</code> and returns only the resources you can see.
+            Depending on the endpoint and your grants, expect one of:
+            an array of results (success), an empty array <code>[]</code>{' '}
+            (authenticated but no grants for this resource class — typical for{' '}
+            offices / teams / staff when not yet granted), or <code>403 FORBIDDEN</code>{' '}
+            (admin-only endpoints like <code>/org/users</code>).
           </p>
 
           <AppDataExample
             appId="accounts"
             label="Accounts"
             endpoint="/org/accounts"
+          />
+          <AppDataExample
+            appId="campaigns"
+            label="Campaigns"
+            endpoint="/org/campaigns"
+          />
+          <AppDataExample
+            appId="offices"
+            label="Offices"
+            endpoint="/org/offices"
+          />
+          <AppDataExample
+            appId="teams"
+            label="Teams"
+            endpoint="/org/teams"
           />
           <AppDataExample
             appId="staff"
