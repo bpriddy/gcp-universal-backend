@@ -175,16 +175,18 @@ gcp-universal-backend/
 │   │   ├── validate.ts               # Zod request body validator factory
 │   │   └── errorHandler.ts           # Centralized error → HTTP response mapping
 │   ├── modules/
+│   │   ├── ai/                       # Gemini driver + prompt_presets runner
 │   │   ├── auth/                     # Login, refresh, logout, JWKS endpoints
 │   │   ├── health/                   # /health (readiness) + /health/live (liveness)
 │   │   ├── integrations/
 │   │   │   ├── google-directory/     # Google Workspace directory sync engine
 │   │   │   ├── google-drive/         # Drive LLM extraction + review workflow
-│   │   │   ├── sync-run.service.ts   # Shared sync run logging service
+│   │   │   ├── sync-run.service.ts   # Shared sync run logging + stale-run sweeper
 │   │   │   └── sync-runs.router.ts   # Sync run API endpoints
 │   │   ├── mail/                     # Mail driver (console | Mailgun)
 │   │   ├── mcp/                      # MCP server for AI agent tools
-│   │   ├── org/                      # Staff, accounts, campaigns, access grants
+│   │   ├── org/                      # Staff, accounts, campaigns, offices, teams, users, access grants
+│   │   ├── staff-classifier/         # LLM-backed is-this-a-person decision (source-agnostic)
 │   │   └── workspace/                # X-Workspace-Token pass-through + SA fallback
 │   ├── services/
 │   │   ├── google.service.ts         # Google ID token verification
@@ -256,7 +258,14 @@ All org routes require a valid Bearer JWT.
 | `GET` | `/org/accounts` | List all accounts with resolved current state |
 | `GET` | `/org/accounts/:id` | Fetch a single account |
 | `GET` | `/org/accounts/:id/campaigns` | List campaigns for an account |
+| `GET` | `/org/campaigns` | List all campaigns across accounts (`?status=<s>` optional filter) |
 | `GET` | `/org/campaigns/:id` | Fetch a single campaign |
+| `GET` | `/org/offices` | List offices (gated by `office_all` / `office_active` / `office` grants; zero grants → empty) |
+| `GET` | `/org/offices/:id` | Fetch a single office (same gate) |
+| `GET` | `/org/teams` | List teams with members (gated by `team_all` / `team_active` / `team` grants) |
+| `GET` | `/org/teams/:id` | Fetch a single team with members (same gate) |
+| `GET` | `/org/users` | Admin-only list of GUB user identities (`?activeOnly=true` optional) |
+| `GET` | `/org/users/:id` | Admin or self: fetch user identity |
 | `GET` | `/org/staff` | List active staff (`?all=true` includes former) |
 | `GET` | `/org/staff/:id` | Fetch a single staff member |
 
@@ -431,7 +440,13 @@ gcloud run deploy gcp-universal-backend \
 | `JWT_AUDIENCE` | No | JWT `aud` claim (default: `https://api.example.com`) |
 | `JWT_ACCESS_TOKEN_TTL` | No | Access token lifetime in seconds (default: `900`) |
 | `JWT_REFRESH_TOKEN_TTL` | No | Refresh token lifetime in seconds (default: `2592000`) |
+| `GOOGLE_ALLOWED_AUDIENCES` | No | Comma-separated list of Google Client IDs GUB will accept on `/auth/google`. `GOOGLE_CLIENT_ID` is always included implicitly. |
 | `CORS_ALLOWED_ORIGINS` | No | Comma-separated allowed origins |
 | `AUTH_RATE_LIMIT_MAX` | No | Max auth requests per window (default: `10`) |
 | `PORT` | No | Server port (default: `3000`) |
 | `NODE_ENV` | No | `development` \| `production` \| `test` |
+| `GUB_ADMIN_BASE_URL` | No | URL of gub-admin (used for admin-link emails) |
+| `GUB_REVIEW_BASE_URL` | No | URL of gub-review (public magic-link service). Falls back to `GUB_ADMIN_BASE_URL` when unset. |
+| `GOOGLE_DIRECTORY_SA_KEY_PATH` / `_B64` | One of (for Directory sync) | Service account JSON for the Google Workspace Directory. Path in local dev; base64 via Secret Manager in prod. |
+| `GOOGLE_DIRECTORY_IMPERSONATE_EMAIL` | Yes (for Directory sync) | Domain-wide delegation target. |
+| `GEMINI_API_KEY` | No | When set, enables real LLM calls (Drive extraction + staff classification). Without it, both fall back to mock drivers — pipelines still run end-to-end in dev. |

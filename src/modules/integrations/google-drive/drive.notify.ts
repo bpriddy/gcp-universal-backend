@@ -226,7 +226,12 @@ export async function notifyReviewers(input: NotifyInput = {}): Promise<NotifyRe
 // ── Rendering ──────────────────────────────────────────────────────────────
 
 function buildMagicLink(token: string): string {
-  const base = config.GUB_ADMIN_BASE_URL.replace(/\/$/, '');
+  // Review links point at gub-review (public Cloud Run, no IAP), not
+  // gub-admin (IAP-fronted, internal-only). Falls back to GUB_ADMIN_BASE_URL
+  // so older deployments without GUB_REVIEW_BASE_URL set still function —
+  // the review route was originally served from gub-admin.
+  const baseUrl = config.GUB_REVIEW_BASE_URL ?? config.GUB_ADMIN_BASE_URL;
+  const base = baseUrl.replace(/\/$/, '');
   return `${base}/drive-review/${token}`;
 }
 

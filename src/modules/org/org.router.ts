@@ -44,6 +44,15 @@ router.get('/accounts/:id/history', orgController.getAccountHistory);
 // ── Campaigns ──────────────────────────────────────────────────────────────
 
 /**
+ * GET /org/campaigns
+ * List all campaigns the caller can see across accounts. Optional
+ * `?status=<status>` query filter. Admins see everything; other users
+ * see campaigns they have an access_grant for (cascading grants from
+ * account-level access are pre-materialized at grant time).
+ */
+router.get('/campaigns', orgController.listCampaigns);
+
+/**
  * GET /org/campaigns/:id
  * Fetch a single campaign by ID.
  */
@@ -54,6 +63,51 @@ router.get('/campaigns/:id', orgController.getCampaign);
  * Full change log for a campaign. Requires func:temporal grant (rolling or all_time).
  */
 router.get('/campaigns/:id/history', orgController.getCampaignHistory);
+
+// ── Offices ────────────────────────────────────────────────────────────────
+
+/**
+ * GET /org/offices
+ * List all offices with resolved currentState from office_changes.
+ * Optional `?activeOnly=true` filters to isActive=true.
+ */
+router.get('/offices', orgController.listOffices);
+
+/**
+ * GET /org/offices/:id
+ * Fetch a single office by ID.
+ */
+router.get('/offices/:id', orgController.getOffice);
+
+// ── Teams ──────────────────────────────────────────────────────────────────
+
+/**
+ * GET /org/teams
+ * List all teams with members + resolved currentState.
+ * Optional `?activeOnly=true`.
+ */
+router.get('/teams', orgController.listTeams);
+
+/**
+ * GET /org/teams/:id
+ * Fetch a single team with members by ID.
+ */
+router.get('/teams/:id', orgController.getTeam);
+
+// ── Users ──────────────────────────────────────────────────────────────────
+
+/**
+ * GET /org/users
+ * Admin-only list of all users (Google OAuth identities — distinct from Staff).
+ * Optional `?activeOnly=true`.
+ */
+router.get('/users', orgController.listUsers);
+
+/**
+ * GET /org/users/:id
+ * Admin can fetch any user; non-admin users can only fetch themselves.
+ */
+router.get('/users/:id', orgController.getUser);
 
 // ── Staff ──────────────────────────────────────────────────────────────────
 

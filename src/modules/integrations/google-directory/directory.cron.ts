@@ -3,9 +3,9 @@
  *
  * Pipeline: fetch → classify → map → apply → log
  *
- * Non-person entries (groups, service accounts, external domains) are
- * filtered out at the classify step and recorded in the sync run log
- * with a human-readable reason.
+ * Classification uses src/modules/staff-classifier (hard-filters + LLM).
+ * Non-person entries are recorded in sync_runs.details.skipped with the
+ * LLM's reason string when available.
  *
  * Run on a daily schedule via Cloud Scheduler → POST /integrations/google-directory/cron
  */
@@ -13,7 +13,7 @@
 import { fetchAllDirectoryPeople } from './directory.client';
 import { mapDirectoryPerson } from './directory.mapper';
 import { applyDirectoryPerson } from './directory.sync';
-import { classifyDirectoryEntry } from './directory.classifier';
+import { classifyEntries } from '../../staff-classifier';
 import {
   startSyncRun,
   completeSyncRun,
@@ -51,19 +51,42 @@ export async function runDirectoryFullSync(): Promise<DirectorySyncResult> {
     const people = await fetchAllDirectoryPeople();
     logger.info({ count: people.length, runId }, 'Google Directory full sync: fetched profiles');
 
-    for (const person of people) {
-      const email = person.emailAddresses?.[0]?.value ?? '';
-      const name = person.names?.[0]?.displayName ?? '';
+    // ── Classify the whole batch at once ─────────────────────────────────
+    // The staff-classifier module handles hard-filters + LLM + sync-rule
+    // overrides in one call. We preserve order so we can zip back to the
+    // original Google People responses.
+    const entries = people.map((p) => ({
+      email: p.emailAddresses?.[0]?.value ?? '',
+      displayName: p.names?.[0]?.displayName ?? '',
+    }));
 
-      // ── Classify ────────────────────────────────────────────────────────
-      const classification = classifyDirectoryEntry(email, name);
+    const classifications = await classifyEntries(entries);
+    logger.info(
+      {
+        runId,
+        total: classifications.length,
+        persons: classifications.filter((c) => c.kind === 'person').length,
+        skipped: classifications.filter((c) => c.kind === 'skip').length,
+      },
+      'Google Directory full sync: classified',
+    );
 
-      if (classification.type === 'skipped') {
+    for (let i = 0; i < people.length; i++) {
+      const person = people[i]!;
+      const classification = classifications[i]!;
+      const email = classification.input.email;
+      const name = classification.input.displayName;
+
+      if (classification.kind === 'skip') {
         skipped.push({
           email,
           name,
           reason: classification.reason,
           detail: classification.detail,
+          source: classification.source,
+          ...(classification.confidence !== undefined
+            ? { confidence: classification.confidence }
+            : {}),
         });
         continue;
       }
@@ -77,6 +100,7 @@ export async function runDirectoryFullSync(): Promise<DirectorySyncResult> {
           name,
           reason: 'unmappable',
           detail: 'mapper returned null (missing required fields)',
+          source: 'hard_filter',
         });
         continue;
       }
@@ -90,8 +114,6 @@ export async function runDirectoryFullSync(): Promise<DirectorySyncResult> {
           changes.push({ email: mapped.staff.email, name: mapped.staff.fullName, action: 'created' });
         } else if (result === 'updated') {
           updated++;
-          // The change details come from the sync layer — we record the top-level action here.
-          // For granular diffs, the sync run details.changes entries get enriched below.
           changes.push({ email: mapped.staff.email, name: mapped.staff.fullName, action: 'updated' });
         } else {
           unchanged++;

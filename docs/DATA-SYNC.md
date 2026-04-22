@@ -36,16 +36,45 @@ human-readable summary.
 5. **Log** — A `sync_runs` row is completed with counters, structured JSONB
    details, and a pre-rendered text summary.
 
-### Classification Rules
+### Classification — LLM-backed (replaces regex, 2026-04-22)
 
-The classifier (`directory.classifier.ts`) identifies non-person entries using:
+Lives in `src/modules/staff-classifier/` — source-agnostic (accepts any
+`{ email, displayName }` pair; not coupled to Google Directory). Three
+layers in order:
 
-- **Service accounts** — Email patterns like `support@`, `talent@`, `info@`,
-  `berbackup@`, and display names starting with the company name.
-- **External domains** — Emails not matching the primary domain(s).
-- **No-reply addresses** — `noreply@`, `no-reply@`, `donotreply@` patterns.
-- **Newsletters** — `newsletter@`, `updates@`, `digest@` patterns.
-- **Unmappable** — Entries missing a name or email entirely.
+1. **Sync-rule overrides** (`sync-rules.service.ts`) — per-email admin
+   overrides. Stubbed today; will read from a future `sync_rules` table.
+   `always_skip` or `always_keep` here wins over every other layer.
+
+2. **Hard filters** (`hard-filters.ts`) — deterministic skips. Only two
+   rules, both bright-line:
+   - `unmappable` — missing email OR displayName
+   - `external_domain` — domain not in `PRIMARY_DOMAINS` (includes
+     subdomains of the primary — e.g. `news.anomaly.com` is treated as
+     external)
+
+3. **LLM classifier** (`llm-classifier.ts`) — Gemini with structured
+   output. Everything that survives the first two layers goes here.
+   - Prompt key: `staff.classify_v1` in the `prompt_presets` table
+     (editable without a deploy).
+   - Batched 50 entries per call for token economy (~$0.02/sync for
+     a 500-entry directory on Flash pricing).
+   - **Greedy-keep bias** — the prompt explicitly prefers false
+     positives (service account let through) over false negatives
+     (real staff dropped). If the LLM returns fewer items than sent,
+     a single retry covers the missing ones; anything still missing
+     stays classified as `person`.
+   - **Fail-open** — network errors, rate limits, or MockLlmDriver
+     (unset `GEMINI_API_KEY`) all degrade to greedy-keep. A sync
+     never fails because Gemini was unavailable.
+   - **Audit** — service_account skips emit the LLM's short reason
+     + confidence into the sync run log (see `details.skipped.detail`
+     and `details.skipped.confidence`).
+
+The old regex patterns (`SERVICE_ACCOUNT_PATTERNS`, `SERVICE_NAME_PATTERNS`)
+were deleted; conventions about "this looks like a service account" now
+live in the prompt, not in code. Update the prompt (and the future
+sync_rules table) instead of redeploying.
 
 ### Authentication
 
@@ -112,9 +141,15 @@ Configuration for each sync source:
 The shared service (`sync-run.service.ts`) provides:
 
 - `startSyncRun(source)` — Creates a `running` row, returns the ID.
+  Also runs the **stale-run sweep** at the start of every new run:
+  anything stuck in `running` for > 15 minutes is flipped to `failed`
+  with a diagnostic summary. This is the safety net for background
+  work that dies mid-flight (Cloud Run instance terminated, OOM, crash).
 - `completeSyncRun(runId, source, counters, details, status)` — Writes final
   counters, JSONB details, human-readable summary, and updates the
   `data_sources` row with `last_sync_at` and `last_status`.
+- `sweepStaleSyncRuns(maxAgeMs = 15m)` — Standalone sweeper. Called
+  inside `startSyncRun`; can also be called manually for housekeeping.
 
 ### API Endpoints
 
@@ -123,6 +158,26 @@ The shared service (`sync-run.service.ts`) provides:
 | `GET` | `/integrations/sync-runs` | List runs (filterable by `?source=`) |
 | `GET` | `/integrations/sync-runs/latest/:source` | Latest run for a source |
 | `GET` | `/integrations/sync-runs/:id` | Full run details |
+| `POST` | `/integrations/google-directory/cron` | Trigger Directory sync |
+| `POST` | `/integrations/google-drive/run-full-sync` | Trigger Drive sync |
+| `POST` | `/integrations/google-drive/cron` | Legacy alias for `/run-full-sync` |
+| `POST` | `/integrations/google-drive/notify` | On-demand reviewer notify fan-out |
+| `POST` | `/integrations/google-drive/sweep-expired` | Cron target — flip expired proposals to `state='expired'` |
+
+**Admin endpoint auth — known gap:** all POST endpoints above are
+currently unauthenticated. See `drive.router.ts` inline TODO(security).
+Tracked to be replaced with service-to-service Google ID token auth
+(whitelisted caller SA → verified against Google JWKS).
+
+### Cloud Run runtime requirements
+
+Background sync work runs as fire-and-forget (the HTTP handler returns
+202 before the sync finishes). Cloud Run's default CPU throttling
+silently kills these — fix is `--no-cpu-throttling` on the service
+(codified in `cloudbuild/dev.yaml`; applied to the dev service
+2026-04-22). Without it, runs get stuck in `running` forever and never
+write a summary. The sweep described above also catches this, but
+prevention is the real fix.
 
 ## Change Log Previous Values
 

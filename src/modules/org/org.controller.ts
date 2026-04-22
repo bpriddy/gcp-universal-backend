@@ -71,6 +71,26 @@ export async function getAccountHistory(
 
 // ── Campaigns ──────────────────────────────────────────────────────────────
 
+/**
+ * GET /org/campaigns
+ * List all campaigns the caller can see across accounts. Optional
+ * `?status=<status>` query filter.
+ */
+export async function listCampaigns(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const { userId, isAdmin } = identity(req);
+    const status = typeof req.query['status'] === 'string' ? req.query['status'] : undefined;
+    const campaigns = await orgService.listCampaigns(userId, isAdmin, status);
+    res.status(200).json(campaigns);
+  } catch (err) {
+    handleError(err, res, next);
+  }
+}
+
 export async function listCampaignsByAccount(
   req: Request<{ accountId: string }>,
   res: Response,
@@ -333,6 +353,135 @@ export async function searchByMetadata(
       ...(isFeatured !== undefined ? { isFeatured } : {}),
     });
     res.status(200).json(results);
+  } catch (err) {
+    handleError(err, res, next);
+  }
+}
+
+// ── Offices ────────────────────────────────────────────────────────────────
+
+/**
+ * GET /org/offices
+ * List all offices. Optional `?activeOnly=true` filters to isActive=true.
+ */
+export async function listOffices(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const { userId, isAdmin } = identity(req);
+    const activeOnly = req.query['activeOnly'] === 'true';
+    const offices = await orgService.listOffices(userId, isAdmin, activeOnly);
+    res.status(200).json(offices);
+  } catch (err) {
+    handleError(err, res, next);
+  }
+}
+
+/**
+ * GET /org/offices/:id
+ * Fetch a single office by id.
+ */
+export async function getOffice(
+  req: Request<{ id: string }>,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const { userId, isAdmin } = identity(req);
+    const office = await orgService.getOffice(req.params.id, userId, isAdmin);
+    if (!office) {
+      res.status(404).json({ code: 'NOT_FOUND', message: 'Office not found' });
+      return;
+    }
+    res.status(200).json(office);
+  } catch (err) {
+    handleError(err, res, next);
+  }
+}
+
+// ── Teams ──────────────────────────────────────────────────────────────────
+
+/**
+ * GET /org/teams
+ * List all teams with members. Optional `?activeOnly=true` filters to isActive=true.
+ */
+export async function listTeams(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const { userId, isAdmin } = identity(req);
+    const activeOnly = req.query['activeOnly'] === 'true';
+    const teams = await orgService.listTeams(userId, isAdmin, activeOnly);
+    res.status(200).json(teams);
+  } catch (err) {
+    handleError(err, res, next);
+  }
+}
+
+/**
+ * GET /org/teams/:id
+ * Fetch a single team with members by id.
+ */
+export async function getTeam(
+  req: Request<{ id: string }>,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const { userId, isAdmin } = identity(req);
+    const team = await orgService.getTeam(req.params.id, userId, isAdmin);
+    if (!team) {
+      res.status(404).json({ code: 'NOT_FOUND', message: 'Team not found' });
+      return;
+    }
+    res.status(200).json(team);
+  } catch (err) {
+    handleError(err, res, next);
+  }
+}
+
+// ── Users ──────────────────────────────────────────────────────────────────
+
+/**
+ * GET /org/users
+ * Admin-only. List all users. Optional `?activeOnly=true`.
+ */
+export async function listUsers(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const { userId, isAdmin } = identity(req);
+    const activeOnly = req.query['activeOnly'] === 'true';
+    const users = await orgService.listUsers(userId, isAdmin, activeOnly);
+    res.status(200).json(users);
+  } catch (err) {
+    handleError(err, res, next);
+  }
+}
+
+/**
+ * GET /org/users/:id
+ * Admin can fetch any user; non-admin users can only fetch themselves.
+ */
+export async function getUser(
+  req: Request<{ id: string }>,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const { userId, isAdmin } = identity(req);
+    const user = await orgService.getUser(req.params.id, userId, isAdmin);
+    if (!user) {
+      res.status(404).json({ code: 'NOT_FOUND', message: 'User not found' });
+      return;
+    }
+    res.status(200).json(user);
   } catch (err) {
     handleError(err, res, next);
   }

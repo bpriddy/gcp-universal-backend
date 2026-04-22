@@ -49,6 +49,64 @@ export interface ChangeLogEntry {
   changedAt: Date;
 }
 
+// Offices and Teams mirror the Account change-log pattern — a `currentState`
+// map resolved from their *_changes history, alongside the base row fields.
+
+export interface OfficeCurrentState {
+  [property: string]: string | null;
+}
+
+export interface OfficeResponse {
+  id: string;
+  name: string;
+  syncCity: string | null;
+  isActive: boolean;
+  startedAt: Date | null;
+  currentState: OfficeCurrentState;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface TeamCurrentState {
+  [property: string]: string | null;
+}
+
+export interface TeamMemberSummary {
+  staffId: string;
+  fullName: string;
+  email: string;
+  title: string | null;
+}
+
+export interface TeamResponse {
+  id: string;
+  name: string;
+  description: string | null;
+  isActive: boolean;
+  startedAt: Date | null;
+  members: TeamMemberSummary[];
+  currentState: TeamCurrentState;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+// Users are Google OAuth identities — distinct from Staff (org employees).
+// A user may or may not have a staff profile. List is admin-only; by-id is
+// admin or self. Sensitive fields (googleSub, refreshTokens, etc.) are
+// deliberately excluded from this public shape.
+
+export interface UserResponse {
+  id: string;
+  email: string;
+  displayName: string | null;
+  avatarUrl: string | null;
+  role: string;
+  isAdmin: boolean;
+  isActive: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export interface StaffResponse {
   id: string;
   fullName: string;

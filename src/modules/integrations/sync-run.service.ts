@@ -15,6 +15,15 @@ export interface SkipEntry {
   name: string;
   reason: string;
   detail: string;
+  /**
+   * Which layer produced the skip. Helpful for triage when something
+   * unexpected is in this bucket — a spike in 'llm' skips means the
+   * prompt or model may have drifted; a spike in 'hard_filter' means
+   * data upstream changed (new domain, missing fields, etc.).
+   */
+  source?: 'hard_filter' | 'llm' | 'sync_rule';
+  /** LLM confidence 0–1 when source='llm'. Undefined otherwise. */
+  confidence?: number;
 }
 
 export interface ChangeEntry {
@@ -49,8 +58,15 @@ export interface SyncRunCounters {
 
 /**
  * Create a sync_runs row in 'running' status. Returns the ID.
+ *
+ * Sweeps stale 'running' rows from prior crashes before starting — see
+ * sweepStaleSyncRuns below. Cheap (single UPDATE) and keeps the dashboard
+ * honest without needing a separate cron.
  */
 export async function startSyncRun(source: string): Promise<string> {
+  await sweepStaleSyncRuns().catch(() => {
+    // Non-fatal; the sweep is opportunistic housekeeping.
+  });
   const run = await prisma.syncRun.create({
     data: { source, status: 'running' },
   });
@@ -160,15 +176,30 @@ function generateSummary(
   }
   lines.push('');
 
-  // Skipped section — grouped by reason
+  // Skipped section — grouped by reason. For LLM-classified skips we
+  // expose the per-entry reason so the audit answers "why" without a
+  // round-trip to the DB. Hard-rule skips keep the compact one-liner.
   lines.push(`SKIPPED: ${counters.skipped} entries`);
   if (counters.skipped > 0) {
     const byReason = groupBy(details.skipped, (s) => s.reason);
     for (const [reason, entries] of Object.entries(byReason).sort((a, b) => b[1].length - a[1].length)) {
       const reasonLabel = formatSkipReason(reason);
-      const examples = entries.slice(0, 3).map((e) => e.email).join(', ');
-      const suffix = entries.length > 3 ? `, ... +${entries.length - 3} more` : '';
-      lines.push(`  ${entries.length} ${reasonLabel} (${examples}${suffix})`);
+      const fromLlm = entries.filter((e) => e.source === 'llm');
+      if (fromLlm.length > 0) {
+        // Detailed listing for LLM-sourced service_account skips.
+        lines.push(`  ${entries.length} ${reasonLabel}:`);
+        for (const e of entries.slice(0, 8)) {
+          const conf = typeof e.confidence === 'number' ? ` [${e.confidence.toFixed(2)}]` : '';
+          lines.push(`    - ${e.email}${conf} — ${e.detail}`);
+        }
+        if (entries.length > 8) {
+          lines.push(`    ... and ${entries.length - 8} more`);
+        }
+      } else {
+        const examples = entries.slice(0, 3).map((e) => e.email).join(', ');
+        const suffix = entries.length > 3 ? `, ... +${entries.length - 3} more` : '';
+        lines.push(`  ${entries.length} ${reasonLabel} (${examples}${suffix})`);
+      }
     }
   }
   lines.push('');
@@ -191,11 +222,12 @@ function generateSummary(
 
 function formatSkipReason(reason: string): string {
   switch (reason) {
-    case 'service_account': return 'group/service accounts';
+    case 'service_account': return 'service accounts (LLM)';
     case 'external_domain': return 'external domain';
-    case 'no_reply': return 'no-reply addresses';
-    case 'newsletter': return 'newsletter/automated senders';
+    case 'no_reply': return 'no-reply addresses';   // legacy — no longer emitted
+    case 'newsletter': return 'newsletter/automated senders'; // legacy
     case 'unmappable': return 'unmappable (missing name or email)';
+    case 'sync_rule': return 'admin sync rule';
     default: return reason;
   }
 }
@@ -213,4 +245,28 @@ function groupBy<T>(items: T[], keyFn: (item: T) => string): Record<string, T[]>
     (result[key] ??= []).push(item);
   }
   return result;
+}
+
+// ── Stale-run sweeper ───────────────────────────────────────────────────────
+
+/**
+ * Mark as 'failed' any sync_runs stuck in 'running' longer than `maxAgeMs`.
+ * Runs are left in 'running' when the runtime dies mid-flight (Cloud Run
+ * CPU throttling on fire-and-forget background work, pod OOM, etc.) —
+ * without this sweep, they'd pin that state forever and block reporting.
+ *
+ * Idempotent. Call on boot and before each new run starts.
+ */
+export async function sweepStaleSyncRuns(maxAgeMs: number = 15 * 60 * 1000): Promise<number> {
+  const cutoff = new Date(Date.now() - maxAgeMs);
+  const result = await prisma.syncRun.updateMany({
+    where: { status: 'running', startedAt: { lt: cutoff } },
+    data: {
+      status: 'failed',
+      completedAt: new Date(),
+      summary:
+        'Run abandoned — runtime was terminated before the sync completed. Auto-resolved by the stale-run sweeper.',
+    },
+  });
+  return result.count;
 }

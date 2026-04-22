@@ -8,7 +8,10 @@ import type {
   AccountCurrentState,
   CampaignResponse,
   ChangeLogEntry,
+  OfficeResponse,
   StaffResponse,
+  TeamResponse,
+  UserResponse,
 } from './org.types';
 
 // ── Account current state ──────────────────────────────────────────────────
@@ -97,6 +100,40 @@ export async function getAccount(
 }
 
 // ── Campaigns ──────────────────────────────────────────────────────────────
+
+/**
+ * List all campaigns the user can see — across all accounts. Mirrors
+ * listAccounts: admins see everything; non-admins see campaigns they have
+ * a direct access_grant for.
+ *
+ * Optionally filter by status via the `status` arg. No other filtering for
+ * now; consumers that need account-scoped results should use
+ * GET /accounts/:accountId/campaigns instead.
+ *
+ * Note on cascading: account-level "full access" grants materialize
+ * per-campaign rows at grant time (see cascading-access.service.ts), so
+ * the direct-grant lookup here is sufficient — cascades aren't a
+ * second-class citizen, they're just eagerly expanded.
+ */
+export async function listCampaigns(
+  userId: string,
+  isAdmin: boolean,
+  status?: string,
+): Promise<CampaignResponse[]> {
+  const grantedCampaignIds = isAdmin
+    ? null
+    : await getGrantedResourceIds(userId, 'campaign');
+
+  const campaigns = await prisma.campaign.findMany({
+    where: {
+      ...(grantedCampaignIds !== null && { id: { in: grantedCampaignIds } }),
+      ...(status ? { status } : {}),
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  return campaigns.map(campaignToResponse);
+}
 
 export async function listCampaignsByAccount(
   accountId: string,
@@ -814,4 +851,395 @@ export async function searchByMetadata(params: {
   }
 
   return Array.from(byStaff.values());
+}
+
+// ── Offices ────────────────────────────────────────────────────────────────
+// Offices are gated by access_grants. Grant types (mirrors staff_*):
+//   office_all      — every office (resourceId ignored)
+//   office_active   — offices where isActive = true (default broad grant)
+//   office          — a specific office (resourceId = offices.id)
+//
+// Admins bypass all grant checks. Users with zero office grants get [].
+// This means, by design, a user with only `office_active` won't see an
+// office that opened and closed within a year (isActive flips to false
+// when it closes, revoking visibility automatically).
+//
+// currentState is resolved from office_changes (property, text|date) and
+// exposes any audit-log-driven overrides of the base Office row.
+
+function resolveSimpleCurrentState(
+  changes: Array<{
+    property: string;
+    valueText: string | null;
+    valueDate: Date | null;
+    changedAt: Date;
+  }>,
+): Record<string, string | null> {
+  const latest = new Map<string, (typeof changes)[0]>();
+  for (const change of changes) {
+    const existing = latest.get(change.property);
+    if (!existing || change.changedAt > existing.changedAt) {
+      latest.set(change.property, change);
+    }
+  }
+  const state: Record<string, string | null> = {};
+  for (const [property, change] of latest) {
+    state[property] =
+      change.valueText ??
+      (change.valueDate ? (change.valueDate.toISOString().split('T')[0] ?? null) : null);
+  }
+  return state;
+}
+
+function officeToResponse(o: {
+  id: string;
+  name: string;
+  syncCity: string | null;
+  isActive: boolean;
+  startedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+  changes: Array<{
+    property: string;
+    valueText: string | null;
+    valueDate: Date | null;
+    changedAt: Date;
+  }>;
+}): OfficeResponse {
+  return {
+    id: o.id,
+    name: o.name,
+    syncCity: o.syncCity,
+    isActive: o.isActive,
+    startedAt: o.startedAt,
+    currentState: resolveSimpleCurrentState(o.changes),
+    createdAt: o.createdAt,
+    updatedAt: o.updatedAt,
+  };
+}
+
+/**
+ * Fetch the office-scoped grants for a user and return a filter describing
+ * what the user may see. Returns `null` when the user has NO office grants
+ * (caller should return an empty list). Admins resolve to `{ allVisible: true }`
+ * and skip this path entirely.
+ */
+async function resolveOfficeVisibility(userId: string): Promise<
+  | { allVisible: true }
+  | { allVisible: false; activeOnly: boolean; ids: string[] }
+  | null
+> {
+  const grants = await prisma.accessGrant.findMany({
+    where: {
+      userId,
+      resourceType: { in: ['office_all', 'office_active', 'office'] },
+      revokedAt: null,
+      OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+    },
+    select: { resourceType: true, resourceId: true },
+  });
+
+  if (grants.length === 0) return null;
+
+  if (grants.some((g) => g.resourceType === 'office_all')) {
+    return { allVisible: true };
+  }
+
+  const activeOnly = grants.some((g) => g.resourceType === 'office_active');
+  const ids = grants
+    .filter((g) => g.resourceType === 'office')
+    .map((g) => g.resourceId);
+
+  return { allVisible: false, activeOnly, ids };
+}
+
+export async function listOffices(
+  userId: string,
+  isAdmin: boolean,
+  activeOnly = false,
+): Promise<OfficeResponse[]> {
+  let where: Prisma.OfficeWhereInput = {};
+
+  if (!isAdmin) {
+    const visibility = await resolveOfficeVisibility(userId);
+    if (!visibility) return [];
+    if (!visibility.allVisible) {
+      // Either isActive=true (cohort grant) OR id in the per-office set.
+      const orClauses: Prisma.OfficeWhereInput[] = [];
+      if (visibility.activeOnly) orClauses.push({ isActive: true });
+      if (visibility.ids.length > 0) orClauses.push({ id: { in: visibility.ids } });
+      if (orClauses.length === 0) return [];
+      where = { OR: orClauses };
+    }
+  }
+
+  // Caller's extra activeOnly query param layers on top of whatever grants allow.
+  if (activeOnly) {
+    where = { AND: [where, { isActive: true }] };
+  }
+
+  const offices = await prisma.office.findMany({
+    where,
+    orderBy: { name: 'asc' },
+    include: { changes: { orderBy: { changedAt: 'desc' } } },
+  });
+  return offices.map(officeToResponse);
+}
+
+export async function getOffice(
+  id: string,
+  userId: string,
+  isAdmin: boolean,
+): Promise<OfficeResponse | null> {
+  const office = await prisma.office.findUnique({
+    where: { id },
+    include: { changes: { orderBy: { changedAt: 'desc' } } },
+  });
+  if (!office) return null;
+
+  if (!isAdmin) {
+    const visibility = await resolveOfficeVisibility(userId);
+    if (!visibility) throw new AccessDeniedError();
+    if (!visibility.allVisible) {
+      const grantedById = visibility.ids.includes(id);
+      const grantedByActive = visibility.activeOnly && office.isActive;
+      if (!grantedById && !grantedByActive) throw new AccessDeniedError();
+    }
+  }
+
+  return officeToResponse(office);
+}
+
+// ── Teams ──────────────────────────────────────────────────────────────────
+// Same access posture as offices (access_grant gated):
+//   team_all      — every team (resourceId ignored)
+//   team_active   — teams where isActive = true (default broad grant)
+//   team          — a specific team (resourceId = teams.id)
+//
+// Admins bypass; zero grants → []. Member rosters piggyback on team
+// visibility — if you can see the team, you see who's on it. For tighter
+// member-level hiding, gate members via /org/staff grants instead.
+
+function teamToResponse(t: {
+  id: string;
+  name: string;
+  description: string | null;
+  isActive: boolean;
+  startedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+  members: Array<{
+    staffId: string;
+    staff: { id: string; fullName: string; email: string; title: string | null };
+  }>;
+  changes: Array<{
+    property: string;
+    valueText: string | null;
+    valueDate: Date | null;
+    changedAt: Date;
+  }>;
+}): TeamResponse {
+  return {
+    id: t.id,
+    name: t.name,
+    description: t.description,
+    isActive: t.isActive,
+    startedAt: t.startedAt,
+    members: t.members.map((m) => ({
+      staffId: m.staff.id,
+      fullName: m.staff.fullName,
+      email: m.staff.email,
+      title: m.staff.title,
+    })),
+    currentState: resolveSimpleCurrentState(t.changes),
+    createdAt: t.createdAt,
+    updatedAt: t.updatedAt,
+  };
+}
+
+async function resolveTeamVisibility(userId: string): Promise<
+  | { allVisible: true }
+  | { allVisible: false; activeOnly: boolean; ids: string[] }
+  | null
+> {
+  const grants = await prisma.accessGrant.findMany({
+    where: {
+      userId,
+      resourceType: { in: ['team_all', 'team_active', 'team'] },
+      revokedAt: null,
+      OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+    },
+    select: { resourceType: true, resourceId: true },
+  });
+
+  if (grants.length === 0) return null;
+  if (grants.some((g) => g.resourceType === 'team_all')) return { allVisible: true };
+
+  const activeOnly = grants.some((g) => g.resourceType === 'team_active');
+  const ids = grants
+    .filter((g) => g.resourceType === 'team')
+    .map((g) => g.resourceId);
+
+  return { allVisible: false, activeOnly, ids };
+}
+
+const TEAM_INCLUDE = {
+  members: {
+    include: {
+      staff: { select: { id: true, fullName: true, email: true, title: true } },
+    },
+  },
+  changes: { orderBy: { changedAt: 'desc' } },
+} as const;
+
+export async function listTeams(
+  userId: string,
+  isAdmin: boolean,
+  activeOnly = false,
+): Promise<TeamResponse[]> {
+  let where: Prisma.TeamWhereInput = {};
+
+  if (!isAdmin) {
+    const visibility = await resolveTeamVisibility(userId);
+    if (!visibility) return [];
+    if (!visibility.allVisible) {
+      const orClauses: Prisma.TeamWhereInput[] = [];
+      if (visibility.activeOnly) orClauses.push({ isActive: true });
+      if (visibility.ids.length > 0) orClauses.push({ id: { in: visibility.ids } });
+      if (orClauses.length === 0) return [];
+      where = { OR: orClauses };
+    }
+  }
+
+  if (activeOnly) {
+    where = { AND: [where, { isActive: true }] };
+  }
+
+  const teams = await prisma.team.findMany({
+    where,
+    orderBy: { name: 'asc' },
+    include: {
+      members: {
+        include: {
+          staff: { select: { id: true, fullName: true, email: true, title: true } },
+        },
+      },
+      changes: { orderBy: { changedAt: 'desc' } },
+    },
+  });
+  return teams.map(teamToResponse);
+}
+
+export async function getTeam(
+  id: string,
+  userId: string,
+  isAdmin: boolean,
+): Promise<TeamResponse | null> {
+  const team = await prisma.team.findUnique({
+    where: { id },
+    include: {
+      members: {
+        include: {
+          staff: { select: { id: true, fullName: true, email: true, title: true } },
+        },
+      },
+      changes: { orderBy: { changedAt: 'desc' } },
+    },
+  });
+  if (!team) return null;
+
+  if (!isAdmin) {
+    const visibility = await resolveTeamVisibility(userId);
+    if (!visibility) throw new AccessDeniedError();
+    if (!visibility.allVisible) {
+      const grantedById = visibility.ids.includes(id);
+      const grantedByActive = visibility.activeOnly && team.isActive;
+      if (!grantedById && !grantedByActive) throw new AccessDeniedError();
+    }
+  }
+
+  return teamToResponse(team);
+}
+
+// ── Users ──────────────────────────────────────────────────────────────────
+// Users are Google OAuth identities, not employees (that's Staff). Access
+// posture is stricter:
+//   list   → admin only (throws AccessDeniedError for non-admins)
+//   get    → admin OR self (a user may always fetch their own record)
+//
+// Sensitive fields (googleSub, refresh tokens, external ids) are NOT
+// included in UserResponse. Consumers that need identity mappings should
+// go through dedicated endpoints.
+
+function userToResponse(u: {
+  id: string;
+  email: string;
+  displayName: string | null;
+  avatarUrl: string | null;
+  role: string;
+  isAdmin: boolean;
+  isActive: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}): UserResponse {
+  return {
+    id: u.id,
+    email: u.email,
+    displayName: u.displayName,
+    avatarUrl: u.avatarUrl,
+    role: u.role,
+    isAdmin: u.isAdmin,
+    isActive: u.isActive,
+    createdAt: u.createdAt,
+    updatedAt: u.updatedAt,
+  };
+}
+
+export async function listUsers(
+  _userId: string,
+  isAdmin: boolean,
+  activeOnly = false,
+): Promise<UserResponse[]> {
+  if (!isAdmin) throw new AccessDeniedError();
+  const users = await prisma.user.findMany({
+    ...(activeOnly ? { where: { isActive: true } } : {}),
+    orderBy: { email: 'asc' },
+    select: {
+      id: true,
+      email: true,
+      displayName: true,
+      avatarUrl: true,
+      role: true,
+      isAdmin: true,
+      isActive: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+  });
+  return users.map(userToResponse);
+}
+
+export async function getUser(
+  id: string,
+  callerUserId: string,
+  isAdmin: boolean,
+): Promise<UserResponse | null> {
+  // Admins can read any user; everyone else can only read themselves.
+  if (!isAdmin && id !== callerUserId) throw new AccessDeniedError();
+  const user = await prisma.user.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      email: true,
+      displayName: true,
+      avatarUrl: true,
+      role: true,
+      isAdmin: true,
+      isActive: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+  });
+  if (!user) return null;
+  return userToResponse(user);
 }
