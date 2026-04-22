@@ -34,6 +34,11 @@ substitutions:
   # so commas here don't collide with --set-env-vars' own comma separator.
   _GOOGLE_ALLOWED_AUDIENCES: "843516467880-hddb27gje6o8p1avb2hqrjj5epmeif16.apps.googleusercontent.com"
   _CORS_ALLOWED_ORIGINS: "https://d87ae7f0-70ba-4579-b44b-761cd572dda4-00-362241jmj0fns.riker.replit.dev,http://localhost:5173,http://localhost:3000"
+  # Google Workspace Directory sync — impersonation target + SA key secret.
+  # The SA key (JSON) is base64-encoded and stored in Secret Manager; GUB
+  # decodes it at boot. Impersonation uses domain-wide delegation.
+  _GOOGLE_DIRECTORY_IMPERSONATE_EMAIL: support@anomaly.com
+  _GOOGLE_DIRECTORY_SA_SECRET: dev-google-directory-sa-key-b64
 
 options:
   logging: CLOUD_LOGGING_ONLY
@@ -142,7 +147,7 @@ steps:
       - --service-account=sa-$_SERVICE@$PROJECT_ID.iam.gserviceaccount.com
       # ^||^ tells gcloud to split KVs on ||, so commas inside values (like
       # CORS_ALLOWED_ORIGINS) aren't misparsed.
-      - --set-env-vars=^||^NODE_ENV=development||GCP_PROJECT_ID=$PROJECT_ID||JWT_ISSUER=$_JWT_ISSUER||JWT_AUDIENCE=$_JWT_AUDIENCE||GUB_ADMIN_BASE_URL=$_GUB_ADMIN_BASE_URL||GUB_REVIEW_BASE_URL=$_GUB_REVIEW_BASE_URL||GOOGLE_ALLOWED_AUDIENCES=$_GOOGLE_ALLOWED_AUDIENCES||CORS_ALLOWED_ORIGINS=$_CORS_ALLOWED_ORIGINS
-      - --set-secrets=DATABASE_URL=$_DB_SECRET:latest,APP_DB_CONNECTIONS=$_APP_DB_SECRET:latest,GOOGLE_CLIENT_ID=$_GOOGLE_CLIENT_ID_SECRET:latest,JWT_PRIVATE_KEY_B64=$_JWT_PRIV_SECRET:latest,JWT_PUBLIC_KEY_B64=$_JWT_PUB_SECRET:latest
+      - --set-env-vars=^||^NODE_ENV=development||GCP_PROJECT_ID=$PROJECT_ID||JWT_ISSUER=$_JWT_ISSUER||JWT_AUDIENCE=$_JWT_AUDIENCE||GUB_ADMIN_BASE_URL=$_GUB_ADMIN_BASE_URL||GUB_REVIEW_BASE_URL=$_GUB_REVIEW_BASE_URL||GOOGLE_ALLOWED_AUDIENCES=$_GOOGLE_ALLOWED_AUDIENCES||CORS_ALLOWED_ORIGINS=$_CORS_ALLOWED_ORIGINS||GOOGLE_DIRECTORY_IMPERSONATE_EMAIL=$_GOOGLE_DIRECTORY_IMPERSONATE_EMAIL
+      - --set-secrets=DATABASE_URL=$_DB_SECRET:latest,APP_DB_CONNECTIONS=$_APP_DB_SECRET:latest,GOOGLE_CLIENT_ID=$_GOOGLE_CLIENT_ID_SECRET:latest,JWT_PRIVATE_KEY_B64=$_JWT_PRIV_SECRET:latest,JWT_PUBLIC_KEY_B64=$_JWT_PUB_SECRET:latest,GOOGLE_DIRECTORY_SA_KEY_B64=$_GOOGLE_DIRECTORY_SA_SECRET:latest
       - --set-cloudsql-instances=$PROJECT_ID:$_REGION:$_CLOUDSQL_INSTANCE
     waitFor: [migrate]
