@@ -1,6 +1,10 @@
 import { prisma } from '../../config/database';
 
-export type ResourceType = 'account' | 'campaign';
+// Per-resource grants. Cohort grants (staff_all, staff_current, office_all,
+// office_active, team_all, team_active) and functional grants (func:*) are
+// queried directly by name in the consuming list/get functions — they don't
+// flow through ResourceType.
+export type ResourceType = 'account' | 'campaign' | 'office' | 'team';
 export type Role = 'viewer' | 'contributor' | 'manager' | 'admin';
 
 export interface GrantAccountAccessParams {
