@@ -43,6 +43,30 @@ export interface SyncRunDetails {
   skipped: SkipEntry[];
   changes: ChangeEntry[];
   errors: ErrorEntry[];
+  /**
+   * Optional — classifier metrics and samples for syncs that route
+   * through the staff-classifier module (Directory today). Lets the
+   * summary answer "what did the LLM actually do?" without a DB dive.
+   */
+  classifier?: ClassifierAudit;
+}
+
+/**
+ * Shape aligned with staff-classifier's ClassifierStats, but kept
+ * separately so sync-run.service doesn't import from a consumer module.
+ */
+export interface ClassifierAudit {
+  totalInput: number;
+  syncRuleHits: number;
+  hardFilterSkips: number;
+  llmInputs: number;
+  llmBatches: number;
+  llmRetries: number;
+  llmFallbacks: number;
+  llmDurationMs: number;
+  llmKeptAsPerson: number;
+  llmSkippedAsService: number;
+  sampleKept: Array<{ email: string; reason: string; confidence: number }>;
 }
 
 export interface SyncRunCounters {
@@ -175,6 +199,30 @@ function generateSummary(
     lines.push(`  ${counters.unchanged} unchanged`);
   }
   lines.push('');
+
+  // Classifier audit — only for syncs that routed through staff-classifier.
+  if (details.classifier) {
+    const c = details.classifier;
+    lines.push('CLASSIFIER:');
+    lines.push(
+      `  Input: ${c.totalInput}  |  sync-rules: ${c.syncRuleHits}  |  hard-filter: ${c.hardFilterSkips}  |  to LLM: ${c.llmInputs}`,
+    );
+    if (c.llmInputs > 0) {
+      lines.push(
+        `  LLM: ${c.llmBatches} batches in ${formatDuration(c.llmDurationMs)}, ${c.llmRetries} retries, ${c.llmFallbacks} fallbacks`,
+      );
+      lines.push(
+        `  LLM decisions: ${c.llmKeptAsPerson} person, ${c.llmSkippedAsService} service_account`,
+      );
+      if (c.sampleKept.length > 0) {
+        lines.push('  Sample LLM "person" decisions:');
+        for (const s of c.sampleKept) {
+          lines.push(`    - ${s.email} [${s.confidence.toFixed(2)}] — ${s.reason}`);
+        }
+      }
+    }
+    lines.push('');
+  }
 
   // Skipped section — grouped by reason. For LLM-classified skips we
   // expose the per-entry reason so the audit answers "why" without a

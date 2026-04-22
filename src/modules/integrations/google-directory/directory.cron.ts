@@ -60,13 +60,14 @@ export async function runDirectoryFullSync(): Promise<DirectorySyncResult> {
       displayName: p.names?.[0]?.displayName ?? '',
     }));
 
-    const classifications = await classifyEntries(entries);
+    const { classifications, stats: classifierStats } = await classifyEntries(entries);
     logger.info(
       {
         runId,
         total: classifications.length,
         persons: classifications.filter((c) => c.kind === 'person').length,
         skipped: classifications.filter((c) => c.kind === 'skip').length,
+        stats: classifierStats,
       },
       'Google Directory full sync: classified',
     );
@@ -140,7 +141,12 @@ export async function runDirectoryFullSync(): Promise<DirectorySyncResult> {
       errored: errors.length,
     };
 
-    const details: SyncRunDetails = { skipped, changes, errors };
+    const details: SyncRunDetails = {
+      skipped,
+      changes,
+      errors,
+      classifier: classifierStats,
+    };
     const status = errors.length > 0 && created + updated + unchanged === 0 ? 'failed' : 'success';
 
     await completeSyncRun(runId, source, counters, details, status);

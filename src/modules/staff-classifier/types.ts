@@ -53,3 +53,36 @@ export interface SkipClassification {
 }
 
 export type Classification = PersonClassification | SkipClassification;
+
+/**
+ * Aggregate stats for a single classifyEntries() call. Surfaced in the
+ * sync run log so operators can answer "what did the LLM actually do?"
+ * without tailing application logs.
+ */
+export interface ClassifierStats {
+  /** Total inputs received by classifyEntries. */
+  totalInput: number;
+  /** Eliminated by sync-rule overrides. Zero until the table exists. */
+  syncRuleHits: number;
+  /** Eliminated by hard filters (unmappable + external_domain). */
+  hardFilterSkips: number;
+  /** Inputs that reached the LLM. */
+  llmInputs: number;
+  /** Batches sent to Gemini. */
+  llmBatches: number;
+  /** Retry calls (diff-and-rerequest for items missing from first pass). */
+  llmRetries: number;
+  /** Entries where the LLM call errored or dropped the item — greedy-kept as person. */
+  llmFallbacks: number;
+  /** Total wall-clock time inside classifyWithLlm, ms. */
+  llmDurationMs: number;
+  /** LLM persons: how many came back as 'person' from the model. */
+  llmKeptAsPerson: number;
+  /** LLM skips: how many came back as 'service_account'. */
+  llmSkippedAsService: number;
+  /**
+   * A few LLM 'person' decisions with their reason + confidence — so the
+   * sync log shows the model's judgment on KEPT staff, not just skips.
+   */
+  sampleKept: Array<{ email: string; reason: string; confidence: number }>;
+}

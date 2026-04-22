@@ -162,7 +162,15 @@ function loadKeyMaterial(
 }
 
 function buildConfig() {
-  const parsed = EnvSchema.safeParse(process.env);
+  // Zod's .optional() treats MISSING as allowed, but an empty-string env var
+  // ('MAIL_FROM_ADDRESS=') is present-and-empty — which fails .email(),
+  // .url(), .min(1) etc. Treat empty strings as "not set" so the same
+  // schema works whether a var is omitted or left blank in .env.
+  const cleaned: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (typeof v === 'string' && v !== '') cleaned[k] = v;
+  }
+  const parsed = EnvSchema.safeParse(cleaned);
 
   if (!parsed.success) {
     const errors = parsed.error.errors
