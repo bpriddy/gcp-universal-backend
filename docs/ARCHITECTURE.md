@@ -48,14 +48,23 @@ via the public JWKS endpoint with no callback required.
 - Google OAuth token verification and user identity resolution
 - RS256 JWT signing with JWKS discovery endpoint
 - Refresh token rotation with reuse detection
-- Organization data API (staff, accounts, campaigns, access grants)
+- Organization data API — accounts, campaigns, offices, teams, staff, users
+  — all gated by `access_grants` (per-resource + cohort scopes like
+  `office_active`, `team_active`, `staff_current`)
 - OAuth 2.0 broker for headless clients (server-side flow)
 - Google access token exchange endpoint (for ADK agent)
 - Staff metadata and resourcing search
-- Data sync engine — Google Directory staff sync (active), Google Drive LLM
-  extraction (active), with Workfront and staff metadata import planned
+- Data sync engine — Google Directory staff sync (active, LLM-classified),
+  Google Drive LLM extraction (active), with Workfront and staff metadata
+  import planned
+- Staff classifier (`src/modules/staff-classifier/`) — source-agnostic
+  `{email, displayName}` → `person | skip` decision. Two hard filters +
+  batched Gemini with greedy-keep bias. Used by Directory sync today;
+  reusable for Okta/BambooHR/whatever comes next.
 - Drive review workflow — notify + magic-link + apply for Drive proposals
-- Sync run logging with structured details and human-readable summaries
+- Sync run logging with structured details, human-readable summaries, and
+  a stale-run auto-sweeper (guards against Cloud Run CPU-throttled
+  background work dying mid-flight)
 - Row-level security via AsyncLocalStorage + PostgreSQL `set_config`
 - Workspace pass-through auth — clients pass Google access tokens via
   `X-Workspace-Token`; GUB never stores Workspace refresh tokens. Service

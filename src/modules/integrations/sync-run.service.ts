@@ -15,6 +15,15 @@ export interface SkipEntry {
   name: string;
   reason: string;
   detail: string;
+  /**
+   * Which layer produced the skip. Helpful for triage when something
+   * unexpected is in this bucket — a spike in 'llm' skips means the
+   * prompt or model may have drifted; a spike in 'hard_filter' means
+   * data upstream changed (new domain, missing fields, etc.).
+   */
+  source?: 'hard_filter' | 'llm' | 'sync_rule';
+  /** LLM confidence 0–1 when source='llm'. Undefined otherwise. */
+  confidence?: number;
 }
 
 export interface ChangeEntry {
@@ -167,15 +176,30 @@ function generateSummary(
   }
   lines.push('');
 
-  // Skipped section — grouped by reason
+  // Skipped section — grouped by reason. For LLM-classified skips we
+  // expose the per-entry reason so the audit answers "why" without a
+  // round-trip to the DB. Hard-rule skips keep the compact one-liner.
   lines.push(`SKIPPED: ${counters.skipped} entries`);
   if (counters.skipped > 0) {
     const byReason = groupBy(details.skipped, (s) => s.reason);
     for (const [reason, entries] of Object.entries(byReason).sort((a, b) => b[1].length - a[1].length)) {
       const reasonLabel = formatSkipReason(reason);
-      const examples = entries.slice(0, 3).map((e) => e.email).join(', ');
-      const suffix = entries.length > 3 ? `, ... +${entries.length - 3} more` : '';
-      lines.push(`  ${entries.length} ${reasonLabel} (${examples}${suffix})`);
+      const fromLlm = entries.filter((e) => e.source === 'llm');
+      if (fromLlm.length > 0) {
+        // Detailed listing for LLM-sourced service_account skips.
+        lines.push(`  ${entries.length} ${reasonLabel}:`);
+        for (const e of entries.slice(0, 8)) {
+          const conf = typeof e.confidence === 'number' ? ` [${e.confidence.toFixed(2)}]` : '';
+          lines.push(`    - ${e.email}${conf} — ${e.detail}`);
+        }
+        if (entries.length > 8) {
+          lines.push(`    ... and ${entries.length - 8} more`);
+        }
+      } else {
+        const examples = entries.slice(0, 3).map((e) => e.email).join(', ');
+        const suffix = entries.length > 3 ? `, ... +${entries.length - 3} more` : '';
+        lines.push(`  ${entries.length} ${reasonLabel} (${examples}${suffix})`);
+      }
     }
   }
   lines.push('');
@@ -198,11 +222,12 @@ function generateSummary(
 
 function formatSkipReason(reason: string): string {
   switch (reason) {
-    case 'service_account': return 'group/service accounts';
+    case 'service_account': return 'service accounts (LLM)';
     case 'external_domain': return 'external domain';
-    case 'no_reply': return 'no-reply addresses';
-    case 'newsletter': return 'newsletter/automated senders';
+    case 'no_reply': return 'no-reply addresses';   // legacy — no longer emitted
+    case 'newsletter': return 'newsletter/automated senders'; // legacy
     case 'unmappable': return 'unmappable (missing name or email)';
+    case 'sync_rule': return 'admin sync rule';
     default: return reason;
   }
 }
