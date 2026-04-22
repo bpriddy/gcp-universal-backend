@@ -64,6 +64,51 @@ router.get('/campaigns/:id', orgController.getCampaign);
  */
 router.get('/campaigns/:id/history', orgController.getCampaignHistory);
 
+// ── Offices ────────────────────────────────────────────────────────────────
+
+/**
+ * GET /org/offices
+ * List all offices with resolved currentState from office_changes.
+ * Optional `?activeOnly=true` filters to isActive=true.
+ */
+router.get('/offices', orgController.listOffices);
+
+/**
+ * GET /org/offices/:id
+ * Fetch a single office by ID.
+ */
+router.get('/offices/:id', orgController.getOffice);
+
+// ── Teams ──────────────────────────────────────────────────────────────────
+
+/**
+ * GET /org/teams
+ * List all teams with members + resolved currentState.
+ * Optional `?activeOnly=true`.
+ */
+router.get('/teams', orgController.listTeams);
+
+/**
+ * GET /org/teams/:id
+ * Fetch a single team with members by ID.
+ */
+router.get('/teams/:id', orgController.getTeam);
+
+// ── Users ──────────────────────────────────────────────────────────────────
+
+/**
+ * GET /org/users
+ * Admin-only list of all users (Google OAuth identities — distinct from Staff).
+ * Optional `?activeOnly=true`.
+ */
+router.get('/users', orgController.listUsers);
+
+/**
+ * GET /org/users/:id
+ * Admin can fetch any user; non-admin users can only fetch themselves.
+ */
+router.get('/users/:id', orgController.getUser);
+
 // ── Staff ──────────────────────────────────────────────────────────────────
 
 /**

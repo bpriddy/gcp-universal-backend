@@ -258,6 +258,12 @@ All org routes require a valid Bearer JWT.
 | `GET` | `/org/accounts/:id/campaigns` | List campaigns for an account |
 | `GET` | `/org/campaigns` | List all campaigns across accounts (`?status=<s>` optional filter) |
 | `GET` | `/org/campaigns/:id` | Fetch a single campaign |
+| `GET` | `/org/offices` | List offices with resolved `currentState` (`?activeOnly=true` optional) |
+| `GET` | `/org/offices/:id` | Fetch a single office |
+| `GET` | `/org/teams` | List teams with members + `currentState` (`?activeOnly=true` optional) |
+| `GET` | `/org/teams/:id` | Fetch a single team with members |
+| `GET` | `/org/users` | Admin-only list of GUB user identities (`?activeOnly=true` optional) |
+| `GET` | `/org/users/:id` | Admin or self: fetch user identity |
 | `GET` | `/org/staff` | List active staff (`?all=true` includes former) |
 | `GET` | `/org/staff/:id` | Fetch a single staff member |
 

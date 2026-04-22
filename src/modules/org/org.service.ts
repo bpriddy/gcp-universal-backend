@@ -8,7 +8,10 @@ import type {
   AccountCurrentState,
   CampaignResponse,
   ChangeLogEntry,
+  OfficeResponse,
   StaffResponse,
+  TeamResponse,
+  UserResponse,
 } from './org.types';
 
 // ── Account current state ──────────────────────────────────────────────────
@@ -848,4 +851,257 @@ export async function searchByMetadata(params: {
   }
 
   return Array.from(byStaff.values());
+}
+
+// ── Offices ────────────────────────────────────────────────────────────────
+// Offices are reference data — every authenticated user may list and fetch
+// them. No access_grant gate (that's reserved for staff/accounts/campaigns
+// where data sensitivity justifies it). If a workspace ever wants tighter
+// control here, add a grant check mirroring listAccounts.
+//
+// currentState is resolved from office_changes (property, text|date) and
+// exposes any audit-log-driven overrides of the base Office row.
+
+function resolveSimpleCurrentState(
+  changes: Array<{
+    property: string;
+    valueText: string | null;
+    valueDate: Date | null;
+    changedAt: Date;
+  }>,
+): Record<string, string | null> {
+  const latest = new Map<string, (typeof changes)[0]>();
+  for (const change of changes) {
+    const existing = latest.get(change.property);
+    if (!existing || change.changedAt > existing.changedAt) {
+      latest.set(change.property, change);
+    }
+  }
+  const state: Record<string, string | null> = {};
+  for (const [property, change] of latest) {
+    state[property] =
+      change.valueText ??
+      (change.valueDate ? (change.valueDate.toISOString().split('T')[0] ?? null) : null);
+  }
+  return state;
+}
+
+function officeToResponse(o: {
+  id: string;
+  name: string;
+  syncCity: string | null;
+  isActive: boolean;
+  startedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+  changes: Array<{
+    property: string;
+    valueText: string | null;
+    valueDate: Date | null;
+    changedAt: Date;
+  }>;
+}): OfficeResponse {
+  return {
+    id: o.id,
+    name: o.name,
+    syncCity: o.syncCity,
+    isActive: o.isActive,
+    startedAt: o.startedAt,
+    currentState: resolveSimpleCurrentState(o.changes),
+    createdAt: o.createdAt,
+    updatedAt: o.updatedAt,
+  };
+}
+
+export async function listOffices(
+  _userId: string,
+  _isAdmin: boolean,
+  activeOnly = false,
+): Promise<OfficeResponse[]> {
+  const offices = await prisma.office.findMany({
+    ...(activeOnly ? { where: { isActive: true } } : {}),
+    orderBy: { name: 'asc' },
+    include: { changes: { orderBy: { changedAt: 'desc' } } },
+  });
+  return offices.map(officeToResponse);
+}
+
+export async function getOffice(
+  id: string,
+  _userId: string,
+  _isAdmin: boolean,
+): Promise<OfficeResponse | null> {
+  const office = await prisma.office.findUnique({
+    where: { id },
+    include: { changes: { orderBy: { changedAt: 'desc' } } },
+  });
+  if (!office) return null;
+  return officeToResponse(office);
+}
+
+// ── Teams ──────────────────────────────────────────────────────────────────
+// Same access posture as offices: reference data, all authenticated users
+// can read. Detail view includes the member roster (staff summary). Member
+// emails are not considered sensitive here since the staff list is already
+// gated at /org/staff with its own access-grant logic — Teams just joins
+// team_members to staff and exposes the columns staff already exposes.
+
+function teamToResponse(t: {
+  id: string;
+  name: string;
+  description: string | null;
+  isActive: boolean;
+  startedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+  members: Array<{
+    staffId: string;
+    staff: { id: string; fullName: string; email: string; title: string | null };
+  }>;
+  changes: Array<{
+    property: string;
+    valueText: string | null;
+    valueDate: Date | null;
+    changedAt: Date;
+  }>;
+}): TeamResponse {
+  return {
+    id: t.id,
+    name: t.name,
+    description: t.description,
+    isActive: t.isActive,
+    startedAt: t.startedAt,
+    members: t.members.map((m) => ({
+      staffId: m.staff.id,
+      fullName: m.staff.fullName,
+      email: m.staff.email,
+      title: m.staff.title,
+    })),
+    currentState: resolveSimpleCurrentState(t.changes),
+    createdAt: t.createdAt,
+    updatedAt: t.updatedAt,
+  };
+}
+
+export async function listTeams(
+  _userId: string,
+  _isAdmin: boolean,
+  activeOnly = false,
+): Promise<TeamResponse[]> {
+  const teams = await prisma.team.findMany({
+    ...(activeOnly ? { where: { isActive: true } } : {}),
+    orderBy: { name: 'asc' },
+    include: {
+      members: {
+        include: {
+          staff: { select: { id: true, fullName: true, email: true, title: true } },
+        },
+      },
+      changes: { orderBy: { changedAt: 'desc' } },
+    },
+  });
+  return teams.map(teamToResponse);
+}
+
+export async function getTeam(
+  id: string,
+  _userId: string,
+  _isAdmin: boolean,
+): Promise<TeamResponse | null> {
+  const team = await prisma.team.findUnique({
+    where: { id },
+    include: {
+      members: {
+        include: {
+          staff: { select: { id: true, fullName: true, email: true, title: true } },
+        },
+      },
+      changes: { orderBy: { changedAt: 'desc' } },
+    },
+  });
+  if (!team) return null;
+  return teamToResponse(team);
+}
+
+// ── Users ──────────────────────────────────────────────────────────────────
+// Users are Google OAuth identities, not employees (that's Staff). Access
+// posture is stricter:
+//   list   → admin only (throws AccessDeniedError for non-admins)
+//   get    → admin OR self (a user may always fetch their own record)
+//
+// Sensitive fields (googleSub, refresh tokens, external ids) are NOT
+// included in UserResponse. Consumers that need identity mappings should
+// go through dedicated endpoints.
+
+function userToResponse(u: {
+  id: string;
+  email: string;
+  displayName: string | null;
+  avatarUrl: string | null;
+  role: string;
+  isAdmin: boolean;
+  isActive: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}): UserResponse {
+  return {
+    id: u.id,
+    email: u.email,
+    displayName: u.displayName,
+    avatarUrl: u.avatarUrl,
+    role: u.role,
+    isAdmin: u.isAdmin,
+    isActive: u.isActive,
+    createdAt: u.createdAt,
+    updatedAt: u.updatedAt,
+  };
+}
+
+export async function listUsers(
+  _userId: string,
+  isAdmin: boolean,
+  activeOnly = false,
+): Promise<UserResponse[]> {
+  if (!isAdmin) throw new AccessDeniedError();
+  const users = await prisma.user.findMany({
+    ...(activeOnly ? { where: { isActive: true } } : {}),
+    orderBy: { email: 'asc' },
+    select: {
+      id: true,
+      email: true,
+      displayName: true,
+      avatarUrl: true,
+      role: true,
+      isAdmin: true,
+      isActive: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+  });
+  return users.map(userToResponse);
+}
+
+export async function getUser(
+  id: string,
+  callerUserId: string,
+  isAdmin: boolean,
+): Promise<UserResponse | null> {
+  // Admins can read any user; everyone else can only read themselves.
+  if (!isAdmin && id !== callerUserId) throw new AccessDeniedError();
+  const user = await prisma.user.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      email: true,
+      displayName: true,
+      avatarUrl: true,
+      role: true,
+      isAdmin: true,
+      isActive: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+  });
+  if (!user) return null;
+  return userToResponse(user);
 }
