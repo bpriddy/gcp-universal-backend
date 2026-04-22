@@ -141,6 +141,11 @@ steps:
       - --allow-unauthenticated
       - --min-instances=0
       - --max-instances=2
+      # CPU always allocated — directory/drive syncs run as fire-and-forget
+      # background work AFTER the HTTP response. Default Cloud Run throttles
+      # CPU to near-zero once the response is sent, which killed mid-flight
+      # syncs (see sync_runs rows stuck in 'running' pre-2026-04-22).
+      - --no-cpu-throttling
       - --memory=512Mi
       - --cpu=1
       - --port=3000

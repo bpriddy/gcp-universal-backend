@@ -49,8 +49,15 @@ export interface SyncRunCounters {
 
 /**
  * Create a sync_runs row in 'running' status. Returns the ID.
+ *
+ * Sweeps stale 'running' rows from prior crashes before starting — see
+ * sweepStaleSyncRuns below. Cheap (single UPDATE) and keeps the dashboard
+ * honest without needing a separate cron.
  */
 export async function startSyncRun(source: string): Promise<string> {
+  await sweepStaleSyncRuns().catch(() => {
+    // Non-fatal; the sweep is opportunistic housekeeping.
+  });
   const run = await prisma.syncRun.create({
     data: { source, status: 'running' },
   });
@@ -213,4 +220,28 @@ function groupBy<T>(items: T[], keyFn: (item: T) => string): Record<string, T[]>
     (result[key] ??= []).push(item);
   }
   return result;
+}
+
+// ── Stale-run sweeper ───────────────────────────────────────────────────────
+
+/**
+ * Mark as 'failed' any sync_runs stuck in 'running' longer than `maxAgeMs`.
+ * Runs are left in 'running' when the runtime dies mid-flight (Cloud Run
+ * CPU throttling on fire-and-forget background work, pod OOM, etc.) —
+ * without this sweep, they'd pin that state forever and block reporting.
+ *
+ * Idempotent. Call on boot and before each new run starts.
+ */
+export async function sweepStaleSyncRuns(maxAgeMs: number = 15 * 60 * 1000): Promise<number> {
+  const cutoff = new Date(Date.now() - maxAgeMs);
+  const result = await prisma.syncRun.updateMany({
+    where: { status: 'running', startedAt: { lt: cutoff } },
+    data: {
+      status: 'failed',
+      completedAt: new Date(),
+      summary:
+        'Run abandoned — runtime was terminated before the sync completed. Auto-resolved by the stale-run sweeper.',
+    },
+  });
+  return result.count;
 }

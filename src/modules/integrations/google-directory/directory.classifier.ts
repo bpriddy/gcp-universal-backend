@@ -29,11 +29,13 @@ const PRIMARY_DOMAINS = new Set(['anomaly.com']);
  * Matched against the full local part (before the @).
  */
 const SERVICE_ACCOUNT_PATTERNS: RegExp[] = [
+  // Department / function mailboxes
   /^talent$/i,
   /^(uk|de|cn|ca|us|ny|la|tor|nyc)talent$/i,
   /^(catalent|detalent|cntalent)$/i,
   /^support$/i,
   /^admin$/i,
+  /^(it|hr|pr|legal|ops|finance|accounting|payroll|marketing)$/i, // 2-letter departments
   /^(nychr|hrit)$/i,
   /^meetings$/i,
   /^(nyc|la|tor)\.(ap|ar|archive|presentations|fix)$/i,
@@ -49,6 +51,13 @@ const SERVICE_ACCOUNT_PATTERNS: RegExp[] = [
   /^thekids$/i,
   /^thelastsilo$/i,
   /^berbackup$/i,
+  // Generic function/team mailboxes
+  /^(data|dev|devops|sre|security|noreply|alerts|notifications)$/i,
+  /^(cia|eotm)$/i, // Anomaly-specific internal groups
+  // Monitoring / bot service accounts
+  /^(jamf|datadog|newrelic|pagerduty|sentry|rollbar|github|slack)$/i,
+  // Test / placeholder accounts
+  /^(test|testing|demo|yoda|placeholder|staging|sandbox)$/i,
 ];
 
 /**
@@ -65,6 +74,14 @@ const SERVICE_NAME_PATTERNS: RegExp[] = [
   /^(the kids|the last silo)$/i,
   /^backups archive$/i,
   /^updates from/i,
+  // Common service-account display-name tells:
+  /\balerts?\b/i,                    // "JAMF Alerts", "GitHub Alert", "Monitoring Alerts"
+  /\b(intelligence|analytics|insights)\b/i,  // "Cultural Intelligence", "Data Analytics"
+  /^data\s/i,                         // "Data Analytics", "Data Pipeline"
+  /^dev\s/i,                          // "dev anomaly", "Dev Test"
+  /\b(test|staging|sandbox|demo)\b/i, // any display name containing these
+  /^(eotm|jamf|yoda)\b/i,             // specific placeholders observed in prod data
+  /\bnotification/i,                  // "System Notifications"
 ];
 
 // ── Public API ───────────────────────────────────────────────────────────────
