@@ -256,6 +256,7 @@ All org routes require a valid Bearer JWT.
 | `GET` | `/org/accounts` | List all accounts with resolved current state |
 | `GET` | `/org/accounts/:id` | Fetch a single account |
 | `GET` | `/org/accounts/:id/campaigns` | List campaigns for an account |
+| `GET` | `/org/campaigns` | List all campaigns across accounts (`?status=<s>` optional filter) |
 | `GET` | `/org/campaigns/:id` | Fetch a single campaign |
 | `GET` | `/org/staff` | List active staff (`?all=true` includes former) |
 | `GET` | `/org/staff/:id` | Fetch a single staff member |

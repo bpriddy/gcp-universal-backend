@@ -44,6 +44,15 @@ router.get('/accounts/:id/history', orgController.getAccountHistory);
 // ── Campaigns ──────────────────────────────────────────────────────────────
 
 /**
+ * GET /org/campaigns
+ * List all campaigns the caller can see across accounts. Optional
+ * `?status=<status>` query filter. Admins see everything; other users
+ * see campaigns they have an access_grant for (cascading grants from
+ * account-level access are pre-materialized at grant time).
+ */
+router.get('/campaigns', orgController.listCampaigns);
+
+/**
  * GET /org/campaigns/:id
  * Fetch a single campaign by ID.
  */

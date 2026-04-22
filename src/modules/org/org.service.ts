@@ -98,6 +98,40 @@ export async function getAccount(
 
 // ── Campaigns ──────────────────────────────────────────────────────────────
 
+/**
+ * List all campaigns the user can see — across all accounts. Mirrors
+ * listAccounts: admins see everything; non-admins see campaigns they have
+ * a direct access_grant for.
+ *
+ * Optionally filter by status via the `status` arg. No other filtering for
+ * now; consumers that need account-scoped results should use
+ * GET /accounts/:accountId/campaigns instead.
+ *
+ * Note on cascading: account-level "full access" grants materialize
+ * per-campaign rows at grant time (see cascading-access.service.ts), so
+ * the direct-grant lookup here is sufficient — cascades aren't a
+ * second-class citizen, they're just eagerly expanded.
+ */
+export async function listCampaigns(
+  userId: string,
+  isAdmin: boolean,
+  status?: string,
+): Promise<CampaignResponse[]> {
+  const grantedCampaignIds = isAdmin
+    ? null
+    : await getGrantedResourceIds(userId, 'campaign');
+
+  const campaigns = await prisma.campaign.findMany({
+    where: {
+      ...(grantedCampaignIds !== null && { id: { in: grantedCampaignIds } }),
+      ...(status ? { status } : {}),
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  return campaigns.map(campaignToResponse);
+}
+
 export async function listCampaignsByAccount(
   accountId: string,
   userId: string,

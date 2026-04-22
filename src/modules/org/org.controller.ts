@@ -71,6 +71,26 @@ export async function getAccountHistory(
 
 // ── Campaigns ──────────────────────────────────────────────────────────────
 
+/**
+ * GET /org/campaigns
+ * List all campaigns the caller can see across accounts. Optional
+ * `?status=<status>` query filter.
+ */
+export async function listCampaigns(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const { userId, isAdmin } = identity(req);
+    const status = typeof req.query['status'] === 'string' ? req.query['status'] : undefined;
+    const campaigns = await orgService.listCampaigns(userId, isAdmin, status);
+    res.status(200).json(campaigns);
+  } catch (err) {
+    handleError(err, res, next);
+  }
+}
+
 export async function listCampaignsByAccount(
   req: Request<{ accountId: string }>,
   res: Response,
