@@ -100,10 +100,16 @@ app.get('/me', gub.middleware(), (req, res) => {
   res.json({ email: req.gub.user.email })
 })
 
-// Fetch org data server-to-server
-const org = gub.orgClient(accessToken)
-const accounts = await org.listAccounts()
-const campaigns = await org.listCampaigns(accountId)
+// Fetch org data server-to-server. Pass the user's access token so the
+// backend scopes results to their access_grants.
+const org = gub.org(accessToken)
+const [accounts, campaigns, offices, teams, staff] = await Promise.all([
+  org.listAccounts(),
+  org.listCampaigns({ status: 'active' }),     // every campaign the user can see
+  org.listOffices({ activeOnly: true }),       // gated by office_* grants
+  org.listTeams({ activeOnly: true }),         // gated by team_* grants
+  org.listStaff(),                             // gated by staff_* grants
+])
 ```
 
 ### Full usage guide
@@ -257,8 +263,8 @@ All org routes require a valid Bearer JWT.
 |---|---|---|
 | `GET` | `/org/accounts` | List all accounts with resolved current state |
 | `GET` | `/org/accounts/:id` | Fetch a single account |
-| `GET` | `/org/accounts/:id/campaigns` | List campaigns for an account |
-| `GET` | `/org/campaigns` | List all campaigns across accounts (`?status=<s>` optional filter) |
+| `GET` | `/org/accounts/:id/campaigns` | List campaigns under a specific account. Requires **account** access grant in addition to campaign grants. Use when the caller is navigating account→campaign. |
+| `GET` | `/org/campaigns` | List every campaign the caller can see. Gated only on **campaign** grants — a user with a direct campaign grant but no parent-account grant is visible here. (`?status=<s>` optional filter) |
 | `GET` | `/org/campaigns/:id` | Fetch a single campaign |
 | `GET` | `/org/offices` | List offices (gated by `office_all` / `office_active` / `office` grants; zero grants → empty) |
 | `GET` | `/org/offices/:id` | Fetch a single office (same gate) |

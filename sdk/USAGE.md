@@ -227,11 +227,13 @@ app.get('/api/dashboard', gub.middleware(), async (req, res) => {
     org.listStaff(),
   ])
 
-  // Campaigns under a specific account
-  const campaigns = await org.listCampaignsByAccount(accounts[0].id)
+  // Every campaign the user can see, across accounts.
+  // (Access is gated on campaign grants — a user CAN have direct campaign
+  //  access without account access, and this lists everything they can see.)
+  const campaigns = await org.listCampaigns({ status: 'active' })
 
-  // Or every campaign the user can see, across accounts
-  const allCampaigns = await org.listCampaigns({ status: 'active' })
+  // If you need campaigns under a specific account, filter client-side:
+  const acmeCampaigns = campaigns.filter((c) => c.accountId === accounts[0].id)
 
   // Offices + teams gated by access_grants — empty array means the user
   // has no `office_*` / `team_*` grants yet, NOT an error.
@@ -277,8 +279,7 @@ http.createServer(async (req, res) => {
 |---|---|---|
 | `org.listAccounts()` | `GUBAccount[]` | Grants |
 | `org.getAccount(id)` | `GUBAccount` | Grants |
-| `org.listCampaigns({ status? })` | `GUBCampaign[]` | Grants |
-| `org.listCampaignsByAccount(accountId)` | `GUBCampaign[]` | Grants |
+| `org.listCampaigns({ status? })` | `GUBCampaign[]` | Grants — campaign-scoped. Does NOT require account access; filter by `accountId` client-side if needed. |
 | `org.getCampaign(id)` | `GUBCampaign` | Grants |
 | `org.listOffices({ activeOnly? })` | `GUBOffice[]` | `office_all` / `office_active` / per-office grant |
 | `org.getOffice(id)` | `GUBOffice` | Same |

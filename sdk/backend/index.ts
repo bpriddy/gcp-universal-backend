@@ -365,20 +365,26 @@ export function createGUBClient(config: GUBClientConfig) {
 
       // ── Campaigns ───────────────────────────────────────────────────────
       /**
-       * List all campaigns the user can see across accounts.
-       * Pass `{ status }` to filter by status (active, completed, etc.).
+       * List every campaign the user can see — across all accounts.
        *
-       * NOTE: this is the unscoped list endpoint. For campaigns under a
-       * specific account, use `listCampaignsByAccount(accountId)`.
+       * Gated by `campaign` access_grants (admin bypasses). This endpoint
+       * intentionally does NOT require account access: a user can have a
+       * direct campaign grant without having access to the parent account,
+       * and that access should still be visible here.
+       *
+       * For by-account filtering, filter on `.accountId` client-side:
+       *   const campaigns = (await org.listCampaigns()).filter(c => c.accountId === id)
+       *
+       * There is a separate backend endpoint (`/org/accounts/:id/campaigns`)
+       * that lists campaigns *within* an account — it requires account
+       * access by design. If you want that semantic, hit it directly; the
+       * SDK doesn't wrap it to avoid implying it's the default "list
+       * campaigns" path.
        */
       listCampaigns: (opts?: { status?: string }) => {
         const qs = opts?.status ? `?status=${encodeURIComponent(opts.status)}` : '';
         return get<GUBCampaign[]>(`/org/campaigns${qs}`);
       },
-
-      /** List campaigns under a specific account */
-      listCampaignsByAccount: (accountId: string) =>
-        get<GUBCampaign[]>(`/org/accounts/${accountId}/campaigns`),
 
       /** Fetch a single campaign by ID */
       getCampaign: (id: string) =>
