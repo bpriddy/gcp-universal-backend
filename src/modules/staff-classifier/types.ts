@@ -81,8 +81,10 @@ export interface ClassifierStats {
   /** LLM skips: how many came back as 'service_account'. */
   llmSkippedAsService: number;
   /**
-   * A few LLM 'person' decisions with their reason + confidence — so the
+   * Every LLM 'person' decision with its reason + confidence — so the
    * sync log shows the model's judgment on KEPT staff, not just skips.
+   * Greedy fallbacks (LLM unavailable) are excluded from this list
+   * because they don't reflect an actual LLM opinion.
    */
-  sampleKept: Array<{ email: string; reason: string; confidence: number }>;
+  llmKept: Array<{ email: string; reason: string; confidence: number }>;
 }

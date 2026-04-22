@@ -58,7 +58,7 @@ export async function classifyEntries(
     llmDurationMs: 0,
     llmKeptAsPerson: 0,
     llmSkippedAsService: 0,
-    sampleKept: [],
+    llmKept: [],
   };
 
   if (entries.length === 0) return { classifications: [], stats: baseStats };
@@ -133,15 +133,14 @@ export async function classifyEntries(
       results[index] = r;
       if (r.kind === 'person' && r.source === 'llm') {
         baseStats.llmKeptAsPerson++;
-        // Capture the first N as a sample. Skip greedy-fallback ones —
-        // those aren't real LLM opinions, just "LLM was unavailable".
+        // Capture every real LLM 'person' decision. Skip greedy-fallback
+        // entries — those aren't real LLM opinions, just "LLM was down".
         if (
-          baseStats.sampleKept.length < 8 &&
           typeof r.confidence === 'number' &&
           r.reason &&
           !r.reason.startsWith('greedy fallback')
         ) {
-          baseStats.sampleKept.push({
+          baseStats.llmKept.push({
             email: r.input.email,
             reason: r.reason,
             confidence: r.confidence,

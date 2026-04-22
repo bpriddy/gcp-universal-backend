@@ -66,7 +66,8 @@ export interface ClassifierAudit {
   llmDurationMs: number;
   llmKeptAsPerson: number;
   llmSkippedAsService: number;
-  sampleKept: Array<{ email: string; reason: string; confidence: number }>;
+  /** Every LLM 'person' decision (email, reason, confidence). */
+  llmKept: Array<{ email: string; reason: string; confidence: number }>;
 }
 
 export interface SyncRunCounters {
@@ -214,12 +215,18 @@ function generateSummary(
       lines.push(
         `  LLM decisions: ${c.llmKeptAsPerson} person, ${c.llmSkippedAsService} service_account`,
       );
-      if (c.sampleKept.length > 0) {
-        lines.push('  Sample LLM "person" decisions:');
-        for (const s of c.sampleKept) {
-          lines.push(`    - ${s.email} [${s.confidence.toFixed(2)}] — ${s.reason}`);
-        }
-      }
+    }
+    lines.push('');
+  }
+
+  // Full list of emails the LLM KEPT as person, with reason + confidence.
+  // Sorted so the model's least-confident kept decisions float to the top —
+  // those are the ones an operator might want to override via sync_rules.
+  if (details.classifier && details.classifier.llmKept.length > 0) {
+    const kept = [...details.classifier.llmKept].sort((a, b) => a.confidence - b.confidence);
+    lines.push(`KEPT AS PERSON (LLM): ${kept.length} entries — sorted by confidence ascending`);
+    for (const k of kept) {
+      lines.push(`  - ${k.email} [${k.confidence.toFixed(2)}] — ${k.reason}`);
     }
     lines.push('');
   }
