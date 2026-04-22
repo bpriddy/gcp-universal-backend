@@ -30,18 +30,38 @@
 import { applyHardFilters } from './hard-filters';
 import { classifyWithLlm } from './llm-classifier';
 import { findSyncRule } from './sync-rules.service';
-import type { ClassifierInput, Classification } from './types';
+import type { ClassifierInput, Classification, ClassifierStats } from './types';
 
-export type { ClassifierInput, Classification, SkipReason } from './types';
+export type { ClassifierInput, Classification, ClassifierStats, SkipReason } from './types';
+
+export interface ClassifyEntriesResult {
+  classifications: Classification[];
+  stats: ClassifierStats;
+}
 
 /**
  * Classify a batch of directory entries.
- * Order of output matches order of input (1:1).
+ * Order of `classifications` matches order of input (1:1).
+ * `stats` describes what each layer did — surface it in the sync log.
  */
 export async function classifyEntries(
   entries: ClassifierInput[],
-): Promise<Classification[]> {
-  if (entries.length === 0) return [];
+): Promise<ClassifyEntriesResult> {
+  const baseStats: ClassifierStats = {
+    totalInput: entries.length,
+    syncRuleHits: 0,
+    hardFilterSkips: 0,
+    llmInputs: 0,
+    llmBatches: 0,
+    llmRetries: 0,
+    llmFallbacks: 0,
+    llmDurationMs: 0,
+    llmKeptAsPerson: 0,
+    llmSkippedAsService: 0,
+    llmKept: [],
+  };
+
+  if (entries.length === 0) return { classifications: [], stats: baseStats };
 
   // Track results by the index of the ORIGINAL entry so we can rebuild
   // the output in the right order after running each layer.
@@ -57,6 +77,7 @@ export async function classifyEntries(
       survivors.push({ entry, index: i });
       continue;
     }
+    baseStats.syncRuleHits++;
     if (rule.decision === 'always_skip') {
       results[i] = {
         kind: 'skip',
@@ -78,9 +99,9 @@ export async function classifyEntries(
   // ── Layer 1: hard filters on survivors.
   const hardInput = survivors.map((s) => s.entry);
   const { kept, skipped } = applyHardFilters(hardInput);
+  baseStats.hardFilterSkips = skipped.length;
 
   // Map hard-filter skips back to their original indexes.
-  // hard-filter results come back interleaved; we match by identity.
   const skippedByRef = new Map<ClassifierInput, Classification>();
   for (const s of skipped) skippedByRef.set(s.input, s);
 
@@ -93,13 +114,41 @@ export async function classifyEntries(
       llmInputs.push({ entry, index });
     }
   }
+  baseStats.llmInputs = llmInputs.length;
+  void kept; // already enumerated through llmInputs
 
   // ── Layer 3: LLM classifies what's left.
   if (llmInputs.length > 0) {
-    const llmResults = await classifyWithLlm(llmInputs.map((x) => x.entry));
+    const { classifications: llmResults, metrics } = await classifyWithLlm(
+      llmInputs.map((x) => x.entry),
+    );
+    baseStats.llmBatches = metrics.batches;
+    baseStats.llmRetries = metrics.retries;
+    baseStats.llmFallbacks = metrics.fallbacks;
+    baseStats.llmDurationMs = metrics.durationMs;
+
     for (let i = 0; i < llmInputs.length; i++) {
       const { index } = llmInputs[i]!;
-      results[index] = llmResults[i]!;
+      const r = llmResults[i]!;
+      results[index] = r;
+      if (r.kind === 'person' && r.source === 'llm') {
+        baseStats.llmKeptAsPerson++;
+        // Capture every real LLM 'person' decision. Skip greedy-fallback
+        // entries — those aren't real LLM opinions, just "LLM was down".
+        if (
+          typeof r.confidence === 'number' &&
+          r.reason &&
+          !r.reason.startsWith('greedy fallback')
+        ) {
+          baseStats.llmKept.push({
+            email: r.input.email,
+            reason: r.reason,
+            confidence: r.confidence,
+          });
+        }
+      } else if (r.kind === 'skip' && r.source === 'llm') {
+        baseStats.llmSkippedAsService++;
+      }
     }
   }
 
@@ -107,7 +156,6 @@ export async function classifyEntries(
   // routing above — any null left here is a developer error.
   for (let i = 0; i < results.length; i++) {
     if (results[i] === null) {
-      // Safest thing to do is greedy-keep. This path should never fire.
       results[i] = {
         kind: 'person',
         input: entries[i]!,
@@ -117,5 +165,5 @@ export async function classifyEntries(
     }
   }
 
-  return results as Classification[];
+  return { classifications: results as Classification[], stats: baseStats };
 }

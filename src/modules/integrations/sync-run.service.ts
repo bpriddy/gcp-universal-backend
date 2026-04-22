@@ -43,6 +43,31 @@ export interface SyncRunDetails {
   skipped: SkipEntry[];
   changes: ChangeEntry[];
   errors: ErrorEntry[];
+  /**
+   * Optional — classifier metrics and samples for syncs that route
+   * through the staff-classifier module (Directory today). Lets the
+   * summary answer "what did the LLM actually do?" without a DB dive.
+   */
+  classifier?: ClassifierAudit;
+}
+
+/**
+ * Shape aligned with staff-classifier's ClassifierStats, but kept
+ * separately so sync-run.service doesn't import from a consumer module.
+ */
+export interface ClassifierAudit {
+  totalInput: number;
+  syncRuleHits: number;
+  hardFilterSkips: number;
+  llmInputs: number;
+  llmBatches: number;
+  llmRetries: number;
+  llmFallbacks: number;
+  llmDurationMs: number;
+  llmKeptAsPerson: number;
+  llmSkippedAsService: number;
+  /** Every LLM 'person' decision (email, reason, confidence). */
+  llmKept: Array<{ email: string; reason: string; confidence: number }>;
 }
 
 export interface SyncRunCounters {
@@ -175,6 +200,36 @@ function generateSummary(
     lines.push(`  ${counters.unchanged} unchanged`);
   }
   lines.push('');
+
+  // Classifier audit — only for syncs that routed through staff-classifier.
+  if (details.classifier) {
+    const c = details.classifier;
+    lines.push('CLASSIFIER:');
+    lines.push(
+      `  Input: ${c.totalInput}  |  sync-rules: ${c.syncRuleHits}  |  hard-filter: ${c.hardFilterSkips}  |  to LLM: ${c.llmInputs}`,
+    );
+    if (c.llmInputs > 0) {
+      lines.push(
+        `  LLM: ${c.llmBatches} batches in ${formatDuration(c.llmDurationMs)}, ${c.llmRetries} retries, ${c.llmFallbacks} fallbacks`,
+      );
+      lines.push(
+        `  LLM decisions: ${c.llmKeptAsPerson} person, ${c.llmSkippedAsService} service_account`,
+      );
+    }
+    lines.push('');
+  }
+
+  // Full list of emails the LLM KEPT as person, with reason + confidence.
+  // Sorted so the model's least-confident kept decisions float to the top —
+  // those are the ones an operator might want to override via sync_rules.
+  if (details.classifier && details.classifier.llmKept.length > 0) {
+    const kept = [...details.classifier.llmKept].sort((a, b) => a.confidence - b.confidence);
+    lines.push(`KEPT AS PERSON (LLM): ${kept.length} entries — sorted by confidence ascending`);
+    for (const k of kept) {
+      lines.push(`  - ${k.email} [${k.confidence.toFixed(2)}] — ${k.reason}`);
+    }
+    lines.push('');
+  }
 
   // Skipped section — grouped by reason. For LLM-classified skips we
   // expose the per-entry reason so the audit answers "why" without a

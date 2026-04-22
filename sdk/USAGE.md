@@ -227,10 +227,22 @@ app.get('/api/dashboard', gub.middleware(), async (req, res) => {
     org.listStaff(),
   ])
 
-  // Get campaigns for a specific account
-  const campaigns = await org.listCampaigns(accounts[0].id)
+  // Every campaign the user can see, across accounts.
+  // (Access is gated on campaign grants — a user CAN have direct campaign
+  //  access without account access, and this lists everything they can see.)
+  const campaigns = await org.listCampaigns({ status: 'active' })
 
-  res.json({ accounts, campaigns, staff })
+  // If you need campaigns under a specific account, filter client-side:
+  const acmeCampaigns = campaigns.filter((c) => c.accountId === accounts[0].id)
+
+  // Offices + teams gated by access_grants — empty array means the user
+  // has no `office_*` / `team_*` grants yet, NOT an error.
+  const [offices, teams] = await Promise.all([
+    org.listOffices({ activeOnly: true }),
+    org.listTeams({ activeOnly: true }),
+  ])
+
+  res.json({ accounts, campaigns, offices, teams, staff })
 })
 ```
 
@@ -263,15 +275,26 @@ http.createServer(async (req, res) => {
 
 ### Available org data methods
 
-| Method | Returns |
-|---|---|
-| `org.listAccounts()` | `GUBAccount[]` |
-| `org.getAccount(id)` | `GUBAccount` |
-| `org.listCampaigns(accountId)` | `GUBCampaign[]` |
-| `org.getCampaign(id)` | `GUBCampaign` |
-| `org.listStaff()` | `GUBStaff[]` |
-| `org.listStaff({ all: true })` | `GUBStaff[]` including former |
-| `org.getStaffMember(id)` | `GUBStaff` |
+| Method | Returns | Gate |
+|---|---|---|
+| `org.listAccounts()` | `GUBAccount[]` | Grants |
+| `org.getAccount(id)` | `GUBAccount` | Grants |
+| `org.listCampaigns({ status? })` | `GUBCampaign[]` | Grants — campaign-scoped. Does NOT require account access; filter by `accountId` client-side if needed. |
+| `org.getCampaign(id)` | `GUBCampaign` | Grants |
+| `org.listOffices({ activeOnly? })` | `GUBOffice[]` | `office_all` / `office_active` / per-office grant |
+| `org.getOffice(id)` | `GUBOffice` | Same |
+| `org.listTeams({ activeOnly? })` | `GUBTeam[]` (with members) | `team_all` / `team_active` / per-team grant |
+| `org.getTeam(id)` | `GUBTeam` | Same |
+| `org.listStaff({ all? })` | `GUBStaff[]` | `staff_all` / `staff_current` / `staff_office` / `staff_team` grant |
+| `org.getStaffMember(id)` | `GUBStaff` | Same |
+| `org.listUsers({ activeOnly? })` | `GUBUserRecord[]` | **Admin only** |
+| `org.getUser(id)` | `GUBUserRecord` | Admin or self |
+
+**On access grants:** for offices, teams, and staff, calling the list
+method with no matching grants returns `[]` — this is intentional, not an
+error. The backend's `access_grants` table is the only gate; to give a
+user access to a team they manually add a `team` / `team_all` /
+`team_active` row. See the admin UI at `/grants/new`.
 
 ### Account current state
 

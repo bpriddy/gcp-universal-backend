@@ -107,6 +107,66 @@ export interface GUBStaff {
   endedAt: string | null;
 }
 
+export interface GUBOfficeCurrentState {
+  [property: string]: string | null;
+}
+
+export interface GUBOffice {
+  id: string;
+  name: string;
+  syncCity: string | null;
+  isActive: boolean;
+  startedAt: string | null;
+  /** Resolved current state from office_changes */
+  currentState: GUBOfficeCurrentState;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GUBTeamCurrentState {
+  [property: string]: string | null;
+}
+
+export interface GUBTeamMember {
+  staffId: string;
+  fullName: string;
+  email: string;
+  title: string | null;
+}
+
+export interface GUBTeam {
+  id: string;
+  name: string;
+  description: string | null;
+  isActive: boolean;
+  startedAt: string | null;
+  members: GUBTeamMember[];
+  /** Resolved current state from team_changes */
+  currentState: GUBTeamCurrentState;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * A GUB user record — the Google OAuth identity (distinct from Staff, which
+ * is the employment-side record). Users may exist without a Staff profile
+ * and vice versa.
+ *
+ * Sensitive fields (googleSub, refresh tokens, external ids) are
+ * deliberately NOT exposed here.
+ */
+export interface GUBUserRecord {
+  id: string;
+  email: string;
+  displayName: string | null;
+  avatarUrl: string | null;
+  role: string;
+  isAdmin: boolean;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 // ── Role ranking ───────────────────────────────────────────────────────────
 
 const ROLE_RANK: Record<string, number> = {
@@ -294,6 +354,7 @@ export function createGUBClient(config: GUBClientConfig) {
     }
 
     return {
+      // ── Accounts ────────────────────────────────────────────────────────
       /** List all accounts the user has access to */
       listAccounts: () =>
         get<GUBAccount[]>('/org/accounts'),
@@ -302,21 +363,89 @@ export function createGUBClient(config: GUBClientConfig) {
       getAccount: (id: string) =>
         get<GUBAccount>(`/org/accounts/${id}`),
 
-      /** List campaigns for an account */
-      listCampaigns: (accountId: string) =>
-        get<GUBCampaign[]>(`/org/accounts/${accountId}/campaigns`),
+      // ── Campaigns ───────────────────────────────────────────────────────
+      /**
+       * List every campaign the user can see — across all accounts.
+       *
+       * Gated by `campaign` access_grants (admin bypasses). This endpoint
+       * intentionally does NOT require account access: a user can have a
+       * direct campaign grant without having access to the parent account,
+       * and that access should still be visible here.
+       *
+       * For by-account filtering, filter on `.accountId` client-side:
+       *   const campaigns = (await org.listCampaigns()).filter(c => c.accountId === id)
+       *
+       * There is a separate backend endpoint (`/org/accounts/:id/campaigns`)
+       * that lists campaigns *within* an account — it requires account
+       * access by design. If you want that semantic, hit it directly; the
+       * SDK doesn't wrap it to avoid implying it's the default "list
+       * campaigns" path.
+       */
+      listCampaigns: (opts?: { status?: string }) => {
+        const qs = opts?.status ? `?status=${encodeURIComponent(opts.status)}` : '';
+        return get<GUBCampaign[]>(`/org/campaigns${qs}`);
+      },
 
       /** Fetch a single campaign by ID */
       getCampaign: (id: string) =>
         get<GUBCampaign>(`/org/campaigns/${id}`),
 
-      /** List active staff members. Pass { all: true } to include former staff */
+      // ── Offices ─────────────────────────────────────────────────────────
+      /**
+       * List offices the user has access to.
+       * Returns `[]` if the user has no `office_all` / `office_active` /
+       * per-office grants — this is not an error, just an empty result.
+       * Pass `{ activeOnly: true }` to filter server-side to `is_active=true`.
+       */
+      listOffices: (opts?: { activeOnly?: boolean }) => {
+        const qs = opts?.activeOnly ? '?activeOnly=true' : '';
+        return get<GUBOffice[]>(`/org/offices${qs}`);
+      },
+
+      /** Fetch a single office by ID. Throws if the caller lacks access. */
+      getOffice: (id: string) =>
+        get<GUBOffice>(`/org/offices/${id}`),
+
+      // ── Teams ───────────────────────────────────────────────────────────
+      /**
+       * List teams the user has access to (with members).
+       * Returns `[]` if the user has no `team_all` / `team_active` / per-team
+       * grants — same semantics as `listOffices`.
+       */
+      listTeams: (opts?: { activeOnly?: boolean }) => {
+        const qs = opts?.activeOnly ? '?activeOnly=true' : '';
+        return get<GUBTeam[]>(`/org/teams${qs}`);
+      },
+
+      /** Fetch a single team by ID (with members). */
+      getTeam: (id: string) =>
+        get<GUBTeam>(`/org/teams/${id}`),
+
+      // ── Staff ───────────────────────────────────────────────────────────
+      /** List active staff members. Pass `{ all: true }` to include former staff. */
       listStaff: (opts?: { all?: boolean }) =>
         get<GUBStaff[]>(`/org/staff${opts?.all ? '?all=true' : ''}`),
 
       /** Fetch a single staff member by ID */
       getStaffMember: (id: string) =>
         get<GUBStaff>(`/org/staff/${id}`),
+
+      // ── Users (GUB identities) ─────────────────────────────────────────
+      /**
+       * List GUB user records. Admin-only — throws for non-admin callers.
+       * Note: this is the OAuth-identity table, distinct from Staff.
+       */
+      listUsers: (opts?: { activeOnly?: boolean }) => {
+        const qs = opts?.activeOnly ? '?activeOnly=true' : '';
+        return get<GUBUserRecord[]>(`/org/users${qs}`);
+      },
+
+      /**
+       * Fetch a user record by ID.
+       * Admin can fetch any user; non-admins can only fetch themselves.
+       */
+      getUser: (id: string) =>
+        get<GUBUserRecord>(`/org/users/${id}`),
     };
   }
 

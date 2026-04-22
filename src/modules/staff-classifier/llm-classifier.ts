@@ -36,6 +36,14 @@ import type { ClassifierInput, Classification } from './types';
 const BATCH_SIZE = 50;
 const PROMPT_KEY = 'staff.classify_v1';
 
+/** Collected metrics for this run. Returned alongside classifications. */
+export interface LlmClassifierMetrics {
+  batches: number;
+  retries: number;
+  fallbacks: number;
+  durationMs: number;
+}
+
 /** Shape Gemini returns — validated lightly, not zod-ed for speed. */
 interface LlmItem {
   email: string;
@@ -91,37 +99,75 @@ function responseSchema(): Schema {
  * Classify a list of entries. Greedy fallback: entries the LLM doesn't
  * cover get classified as 'person'. Never throws — failures degrade to
  * greedy-keep.
+ *
+ * Returns the classifications alongside run-level metrics so the caller
+ * can surface "what did the LLM do?" in the sync log without scraping
+ * application logs.
  */
-export async function classifyWithLlm(entries: ClassifierInput[]): Promise<Classification[]> {
-  if (entries.length === 0) return [];
+export async function classifyWithLlm(
+  entries: ClassifierInput[],
+): Promise<{ classifications: Classification[]; metrics: LlmClassifierMetrics }> {
+  const metrics: LlmClassifierMetrics = {
+    batches: 0,
+    retries: 0,
+    fallbacks: 0,
+    durationMs: 0,
+  };
+  if (entries.length === 0) return { classifications: [], metrics };
 
+  const start = Date.now();
   const out: Classification[] = [];
   for (let i = 0; i < entries.length; i += BATCH_SIZE) {
     const batch = entries.slice(i, i + BATCH_SIZE);
-    const batchResults = await classifyBatch(batch);
+    const batchResults = await classifyBatch(batch, metrics);
     out.push(...batchResults);
   }
-  return out;
+  metrics.durationMs = Date.now() - start;
+  return { classifications: out, metrics };
 }
 
 // ── Internals ───────────────────────────────────────────────────────────────
 
-async function classifyBatch(batch: ClassifierInput[]): Promise<Classification[]> {
+async function classifyBatch(
+  batch: ClassifierInput[],
+  metrics: LlmClassifierMetrics,
+): Promise<Classification[]> {
   // One call covers the batch; if we get fewer items back than we sent,
   // run a single retry on just the missing ones. Whatever's still missing
   // after the retry falls through as 'person'.
+  metrics.batches++;
+  const batchStart = Date.now();
   const firstPass = await callLlm(batch);
   const covered = new Set(firstPass.map((i) => i.email.toLowerCase()));
   const missing = batch.filter((e) => !covered.has(e.email.toLowerCase()));
 
-  const secondPass = missing.length > 0 ? await callLlm(missing, /* retry */ true) : [];
+  let secondPass: LlmItem[] = [];
+  if (missing.length > 0) {
+    metrics.retries++;
+    secondPass = await callLlm(missing, /* retry */ true);
+  }
   const combined = [...firstPass, ...secondPass];
+
+  logger.info(
+    {
+      batchSize: batch.length,
+      firstPassItems: firstPass.length,
+      retries: missing.length,
+      retryRecovered: secondPass.length,
+      durationMs: Date.now() - batchStart,
+    },
+    '[staff-classifier] batch classified',
+  );
 
   // Index by email for fast lookup.
   const byEmail = new Map<string, LlmItem>();
   for (const item of combined) byEmail.set(item.email.toLowerCase(), item);
 
-  return batch.map((input) => toClassification(input, byEmail.get(input.email.toLowerCase())));
+  return batch.map((input) => {
+    const item = byEmail.get(input.email.toLowerCase());
+    if (!item) metrics.fallbacks++;
+    return toClassification(input, item);
+  });
 }
 
 /**
@@ -199,7 +245,9 @@ function toClassification(
     kind: 'skip',
     input,
     reason: 'service_account',
-    detail: `${item.reason} (confidence ${item.confidence.toFixed(2)})`,
+    // Keep detail to just the model's reason — the summary renderer
+    // prefixes the confidence separately so we don't double-print it.
+    detail: item.reason,
     confidence: item.confidence,
     source: 'llm',
   };
