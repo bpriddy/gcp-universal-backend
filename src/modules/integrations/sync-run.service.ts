@@ -219,42 +219,18 @@ function generateSummary(
     lines.push('');
   }
 
-  // Full list of emails the LLM KEPT as person, with reason + confidence.
-  // Sorted so the model's least-confident kept decisions float to the top —
-  // those are the ones an operator might want to override via sync_rules.
-  if (details.classifier && details.classifier.llmKept.length > 0) {
-    const kept = [...details.classifier.llmKept].sort((a, b) => a.confidence - b.confidence);
-    lines.push(`KEPT AS PERSON (LLM): ${kept.length} entries — sorted by confidence ascending`);
-    for (const k of kept) {
-      lines.push(`  - ${k.email} [${k.confidence.toFixed(2)}] — ${k.reason}`);
-    }
-    lines.push('');
-  }
-
-  // Skipped section — grouped by reason. For LLM-classified skips we
-  // expose the per-entry reason so the audit answers "why" without a
-  // round-trip to the DB. Hard-rule skips keep the compact one-liner.
+  // Skipped section — counts per reason only. Per-email detail (with LLM
+  // reason + confidence) lives in details.skipped[] and is rendered in
+  // the scrollable "Skipped" panel on the run detail page. The text
+  // summary was getting 600+ lines long for a full directory sync;
+  // callers who want the enumeration open the detail page.
   lines.push(`SKIPPED: ${counters.skipped} entries`);
   if (counters.skipped > 0) {
     const byReason = groupBy(details.skipped, (s) => s.reason);
-    for (const [reason, entries] of Object.entries(byReason).sort((a, b) => b[1].length - a[1].length)) {
-      const reasonLabel = formatSkipReason(reason);
-      const fromLlm = entries.filter((e) => e.source === 'llm');
-      if (fromLlm.length > 0) {
-        // Detailed listing for LLM-sourced service_account skips.
-        lines.push(`  ${entries.length} ${reasonLabel}:`);
-        for (const e of entries.slice(0, 8)) {
-          const conf = typeof e.confidence === 'number' ? ` [${e.confidence.toFixed(2)}]` : '';
-          lines.push(`    - ${e.email}${conf} — ${e.detail}`);
-        }
-        if (entries.length > 8) {
-          lines.push(`    ... and ${entries.length - 8} more`);
-        }
-      } else {
-        const examples = entries.slice(0, 3).map((e) => e.email).join(', ');
-        const suffix = entries.length > 3 ? `, ... +${entries.length - 3} more` : '';
-        lines.push(`  ${entries.length} ${reasonLabel} (${examples}${suffix})`);
-      }
+    for (const [reason, entries] of Object.entries(byReason).sort(
+      (a, b) => b[1].length - a[1].length,
+    )) {
+      lines.push(`  ${entries.length} ${formatSkipReason(reason)}`);
     }
   }
   lines.push('');
