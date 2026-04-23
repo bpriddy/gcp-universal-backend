@@ -310,6 +310,11 @@ router.get('/data', authenticate, requireAppAccess('analytics'), (req, res) => {
 git clone https://github.com/bpriddy/gcp-universal-backend.git
 cd gcp-universal-backend
 npm install
+
+# Wire the secret-scan pre-commit hook (required — refuses commit on
+# detected API keys, tokens, JSON keys, etc.)
+brew install gitleaks        # or see https://github.com/gitleaks/gitleaks#installation
+git config core.hooksPath .githooks
 ```
 
 ### 2. Start PostgreSQL
