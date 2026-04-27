@@ -25,15 +25,14 @@ terraform {
     }
   }
 
-  # Remote state in GCS — create the bucket once manually:
-  #   gsutil mb -p $PROJECT_ID -l $REGION gs://$PROJECT_ID-tfstate
-  #   gsutil versioning set on gs://$PROJECT_ID-tfstate
-  #
-  # Uncomment after creating the bucket:
-  # backend "gcs" {
-  #   bucket = "os-test-491819-tfstate"
-  #   prefix = "gub-platform"
-  # }
+  # Remote state in GCS. Bucket has versioning + UBLA enabled (see
+  # terraform/README.md "State backend"). NEVER commit terraform.tfstate*
+  # files — the bucket is the source of truth, and a stray commit could
+  # leak resource metadata.
+  backend "gcs" {
+    bucket = "os-test-491819-tfstate"
+    prefix = "gub-platform"
+  }
 }
 
 provider "google" {
