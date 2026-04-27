@@ -65,3 +65,26 @@ variable "cleanup_time_zone" {
   type        = string
   default     = "UTC"
 }
+
+# ── gub-admin authorization (IAP IAM) ────────────────────────────────────────
+
+variable "admin_emails" {
+  description = <<-EOT
+    Email addresses authorized to access the gub-admin app via Cloud IAP.
+    Each entry must be an individual Google account email — groups and
+    domain-wide bindings are intentionally not supported here so the audit
+    trail in IAP logs always names a specific human.
+
+    This list is authoritative: removing an email here revokes their access
+    on the next `terraform apply`.
+  EOT
+  type        = list(string)
+  validation {
+    condition     = length(var.admin_emails) > 0
+    error_message = "admin_emails must contain at least one email — an empty list would lock everyone out of gub-admin."
+  }
+  validation {
+    condition     = alltrue([for e in var.admin_emails : can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", e))])
+    error_message = "Every entry in admin_emails must look like a valid email address."
+  }
+}
