@@ -40,3 +40,14 @@ sync_schedules = {
 
 cleanup_schedule  = "0 2 * * *"     # 2:00 AM UTC daily
 cleanup_time_zone = "UTC"
+
+# ── gub-admin authorization (IAP IAM) ────────────────────────────────────────
+# Authoritative list. To grant admin access add the email here and apply.
+# To revoke, remove and apply. Drift detection is intentional — anyone
+# added via the console without updating this list will be revoked on the
+# next apply.
+
+admin_emails = [
+  "bpriddy@anomaly.com",
+  "kcurnuck@anomaly.com",
+]

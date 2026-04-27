@@ -18,7 +18,10 @@ terraform {
   required_providers {
     google = {
       source  = "hashicorp/google"
-      version = "~> 5.0"
+      # v6.x is required for google_iap_web_cloud_run_service_iam_*
+      # (see gub_admin_iap.tf). google_cloud_scheduler_job and
+      # google_project_service have no breaking changes in 6.0.
+      version = "~> 6.0"
     }
   }
 
