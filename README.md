@@ -429,10 +429,8 @@ gcloud run deploy gcp-universal-backend \
 
 ### Key rotation
 
-1. Generate a new key pair, add to Secret Manager with a new `kid`
-2. Update `JWT_KEY_ID` to the new key ID — new tokens are signed with it
-3. Keep the old public key in the JWKS response for one access token TTL (15 min)
-4. Remove the old key from JWKS after the TTL window passes
+See [Secrets & rotation](#secrets--rotation) below for full procedures
+across all credentials this service uses.
 
 ---
 
@@ -461,3 +459,216 @@ gcloud run deploy gcp-universal-backend \
 | `GOOGLE_DIRECTORY_SA_KEY_PATH` / `_B64` | One of (for Directory sync) | Service account JSON for the Google Workspace Directory. Path in local dev; base64 via Secret Manager in prod. |
 | `GOOGLE_DIRECTORY_IMPERSONATE_EMAIL` | Yes (for Directory sync) | Domain-wide delegation target. |
 | `GEMINI_API_KEY` | No | When set, enables real LLM calls (Drive extraction + staff classification). Without it, both fall back to mock drivers — pipelines still run end-to-end in dev. |
+
+---
+
+## Secrets & rotation
+
+Documents secrets/credentials this service uses, where they live, and how
+to rotate them. This is **system-specific knowledge** — for the
+company-wide incident-response process (escalation, post-mortem, comms),
+see IT's canonical incident-response doc.
+
+> **For the IT team:** this section + each consuming repo's matching
+> section together form the rotation runbook. Per-repo sections:
+> [gub-admin](https://github.com/bpriddy/gub-admin#secrets--rotation),
+> [gub-agent](https://github.com/bpriddy/gub-agent#secrets--rotation),
+> [gub-review](https://github.com/bpriddy/gub-review#secrets--rotation),
+> [work-flows](https://github.com/bpriddy/work-flows#secrets--rotation).
+
+### Inventory
+
+All values live in GCP Secret Manager (project `os-test-491819`) and are
+mounted into Cloud Run at deploy time via the `--set-secrets` flag in
+`cloudbuild/<env>.yaml`. Naming convention is `<env>-<purpose>` (today
+only `dev-` exists; prod will mirror as `prod-`).
+
+| Credential | Where it lives | Issued by | Used for |
+|---|---|---|---|
+| `DATABASE_URL` | Secret Manager: `dev-database-url` | Self-managed (Cloud SQL) | App's runtime DB connection (gub_app role — DML only, no DDL) |
+| `APP_DB_CONNECTIONS` | Secret Manager: `dev-app-db-connections` | Self-managed | JSON map of consuming-app connection strings (see `Database connection registry`) |
+| `GOOGLE_CLIENT_ID` | Secret Manager: `dev-google-client-id` | GCP (OAuth 2.0 Client) | Google sign-in audience verification. **Not actually sensitive** — stored in Secret Manager for parity with other config; no client secret is paired with it because GUB only verifies ID tokens, never exchanges OAuth codes. |
+| `JWT_PRIVATE_KEY_B64` | Secret Manager: `dev-jwt-private-key-b64` | Self-issued (RS256) | Signs GUB-issued JWTs (access + refresh tokens) |
+| `JWT_PUBLIC_KEY_B64` | Secret Manager: `dev-jwt-public-key-b64` (also exposed at `/.well-known/jwks.json`) | Self-issued | Verification by consuming apps (gub-admin, gub-agent, work-flows) |
+| `GOOGLE_DIRECTORY_SA_KEY_B64` | Secret Manager: `dev-google-directory-sa-key-b64` | GCP (Workspace SA with domain-wide delegation) | Reads Google Workspace directory for the staff sync engine |
+| `GEMINI_API_KEY` | Secret Manager: `dev-gemini-api-key` | GCP (API key) | LLM calls for Drive extraction + staff classification. Falls back to mock driver when unset. |
+| Cloud SQL connection | Auto-managed | GCP | Runtime DB access via Cloud SQL Auth Proxy (`--add-cloudsql-instances`) — no static credentials |
+| IAP IAM binding (gub-admin) | Terraform: `terraform/gub_admin_iap.tf` (var `admin_emails`) | GCP IAP | Authoritative list of users who can reach gub-admin |
+
+### Rotation procedures
+
+#### `JWT_PRIVATE_KEY_B64` / `JWT_PUBLIC_KEY_B64`
+
+Asymmetric RS256 key pair. Rotation is delicate because consuming apps
+verify JWTs against the public key — old tokens must remain verifiable
+for the access-token TTL after the new key is signed in.
+
+**Preconditions.** No urgent in-flight deploys. You'll be modifying
+Secret Manager versions and triggering a redeploy.
+
+**Steps.**
+1. Generate a new key pair locally:
+   ```bash
+   npm run keys:generate              # writes keys/private.pem + keys/public.pem
+   ```
+2. Base64-encode each PEM and add a new version to each secret:
+   ```bash
+   base64 -i keys/private.pem | gcloud secrets versions add dev-jwt-private-key-b64 --data-file=-
+   base64 -i keys/public.pem  | gcloud secrets versions add dev-jwt-public-key-b64  --data-file=-
+   ```
+3. Bump `JWT_KEY_ID` (the `kid` claim) in `cloudbuild/<env>.yaml` so new
+   tokens are signed under a new identifier. Commit + push to trigger a
+   redeploy.
+4. **Hold the old public key in JWKS for one access-token TTL window
+   (default 15 min).** GUB serves both old and new public keys at
+   `/.well-known/jwks.json` while both versions exist in the secret.
+5. After the TTL window, disable the previous version of
+   `dev-jwt-public-key-b64`:
+   ```bash
+   gcloud secrets versions disable <PREV_VERSION> --secret=dev-jwt-public-key-b64
+   ```
+
+**Verification.** `curl https://<service>/.well-known/jwks.json` returns
+the new public key under the new `kid`. Issue a fresh token via
+`/auth/google` and confirm consuming apps verify it (gub-admin /users
+loads, work-flows authenticated calls succeed).
+
+**Cleanup.** Disable old versions of both private and public secrets in
+Secret Manager (don't destroy — disabled versions are recoverable for 30
+days). The keys/private.pem and keys/public.pem files in your local
+working tree are gitignored; delete them after upload.
+
+#### `GEMINI_API_KEY`
+
+**Preconditions.** None. Rotation is fast and non-disruptive — without
+the key, GUB falls back to the mock LLM driver, which keeps pipelines
+running end-to-end (just with empty observations).
+
+**Steps.**
+1. Issue a new API key in the GCP console under APIs & Services →
+   Credentials, scoped to the Generative Language API.
+2. Add a new version to Secret Manager:
+   ```bash
+   echo -n '<NEW_KEY>' | gcloud secrets versions add dev-gemini-api-key --data-file=-
+   ```
+3. Trigger a redeploy of `gcp-universal-backend-dev` (push an empty
+   commit to `dev`, or re-run the latest Cloud Build trigger). Cloud Run
+   resolves `:latest` at deploy time, so a new revision picks up the new
+   version.
+
+**Verification.** Run a Drive sync or staff-classifier batch and confirm
+non-empty LLM observations in the `sync_runs` table. If results look
+mock-like, check the new revision's secret resolution:
+```bash
+gcloud run revisions describe <REV> --region=us-central1 --format=json | grep gemini
+```
+
+**Cleanup.** Disable the previous secret version. Delete the old API key
+in the GCP console under APIs & Services → Credentials.
+
+#### `GOOGLE_DIRECTORY_SA_KEY_B64`
+
+Service account JSON key with domain-wide delegation, used for the
+Google Workspace Directory sync.
+
+**Preconditions.** Confirm no Directory sync is mid-flight (check
+`/data-sources` in gub-admin or query `sync_runs` table for
+`status = 'running'`).
+
+**Steps.**
+1. In GCP IAM Console → Service Accounts → `<directory-sa>` → Keys, add
+   a new JSON key. Download.
+2. Base64-encode and upload as new secret version:
+   ```bash
+   base64 -i ~/Downloads/<key>.json | gcloud secrets versions add dev-google-directory-sa-key-b64 --data-file=-
+   rm ~/Downloads/<key>.json   # do this immediately
+   ```
+3. Trigger a redeploy of `gcp-universal-backend-dev`.
+
+**Verification.** Trigger a manual Directory sync from gub-admin
+(`/data-sources/google_directory` → "Sync now"). Confirm the run
+completes with `status='ok'` and counters > 0.
+
+**Cleanup.** In GCP IAM Console, disable then delete the old key. Do
+**not** disable the SA itself — that would break Drive sync (which falls
+back to this SA's credentials).
+
+#### `DATABASE_URL` / `APP_DB_CONNECTIONS`
+
+Postgres connection strings. The runtime app uses `DATABASE_URL` (gub_app
+role); migrations use a separate role injected only into the migration
+job (`DATABASE_MIGRATOR_URL`, not stored in Secret Manager today — change
+that before prod).
+
+**Preconditions.** Confirm Cloud SQL is healthy. If rotating the
+password (not just the connection string), have a maintenance window —
+in-flight requests using the old password will 500 until the new
+revision rolls out.
+
+**Steps.**
+1. Rotate the password in Cloud SQL → Users.
+2. Build the new connection string and add as a new secret version:
+   ```bash
+   echo -n 'postgresql://gub_app:<NEW_PW>@<host>:5432/gub?sslmode=require' \
+     | gcloud secrets versions add dev-database-url --data-file=-
+   ```
+3. Trigger a redeploy. Cloud Run does a rolling update by default.
+
+**Verification.** Hit `/health` on the new revision and confirm the DB
+check passes. Check Cloud SQL connection logs for new connections from
+the new revision.
+
+**Cleanup.** Disable the previous secret version after the new revision
+has been serving for 5+ minutes (longer than any reasonable in-flight
+request).
+
+#### `GOOGLE_CLIENT_ID`
+
+This is the OAuth 2.0 Client ID. **It is not a secret** in the
+cryptographic sense — it ships in every Google sign-in flow's URL — but
+it's stored in Secret Manager for config parity. There's no paired
+`GOOGLE_CLIENT_SECRET` because GUB only verifies ID tokens; it never
+performs an OAuth code exchange (consuming apps like work-flows handle
+that side of OAuth).
+
+To rotate (e.g., abandoning a compromised client and issuing a new one
+under the same Workspace project):
+
+**Steps.**
+1. Create a new OAuth 2.0 Client ID in GCP Console → APIs & Services →
+   Credentials. Whitelist the same redirect URIs as the old one.
+2. Add it as a new version of `dev-google-client-id`. Trigger redeploy.
+3. Update consuming apps to also accept the new client ID via their own
+   `GOOGLE_ALLOWED_AUDIENCES` (or equivalent) — see each consuming repo's
+   Secrets & rotation section.
+4. Once consuming apps are caught up, delete the old OAuth client in
+   GCP Console.
+
+**Verification.** Sign in via the gub-admin login flow with a fresh
+incognito browser. Confirm the JWT `aud` matches the new client ID.
+
+**Cleanup.** Delete the old OAuth client in GCP Console after a window
+long enough that no user has a session keyed to the old `aud` claim.
+
+### Cut a user off (revoke admin access)
+
+This procedure lives here because the IAP IAM binding is managed by this
+repo's Terraform tree.
+
+1. Edit `terraform/environments/<env>.tfvars` and remove the user's
+   email from `admin_emails`.
+2. From `terraform/`, run `terraform apply -var-file=environments/<env>.tfvars`.
+   The authoritative `_binding` revokes the user's IAP grant on apply.
+   Verify the apply log shows the binding being modified, not recreated.
+3. **If the user has GCP roles beyond IAP** (project owner, billing
+   admin, Secret Manager access, Cloud Run admin, etc.), revoke each
+   separately from the GCP IAM console. Item 5's Terraform binding only
+   covers the IAP front door.
+4. **In-flight IAP cookies may persist briefly** (typically up to a few
+   minutes — IAP caches IAM decisions). For immediate cutoff, escalate
+   to GCP support to invalidate active IAP sessions for the user.
+5. Audit Secret Manager bindings:
+   ```bash
+   gcloud secrets get-iam-policy <secret-name>
+   ```
+   Remove any direct grants the user had on individual secrets.
