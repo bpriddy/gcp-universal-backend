@@ -1,8 +1,9 @@
-# Terraform local state and cache
+# Terraform local state and cache.
+# .terraform.lock.hcl is INTENTIONALLY committed — it pins provider versions
+# across operators and CI. See terraform/README.md "Provider versions".
 .terraform/
 *.tfstate
 *.tfstate.backup
-.terraform.lock.hcl
 
 # Crash logs
 crash.log
