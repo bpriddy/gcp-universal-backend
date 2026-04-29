@@ -458,9 +458,9 @@ The handler catches this, clears `page_token`, and surfaces
 ### Chunking
 
 A single `/run-full-sync` may take longer than a Cloud Run service
-instance's reliable lifetime if the folder is large. The runner enforces
-a **50-min wall-clock budget per chunk**, checked between entities. When
-the budget trips:
+instance's reliable lifetime if many files arrived at once. The runner
+enforces a **50-min wall-clock budget per chunk**, checked between
+entities. When the budget trips:
 
 1. Persists `chunk_phase` + `chunk_index` to `sync_runs`.
 2. Sets `status='paused'`.
@@ -468,16 +468,21 @@ the budget trips:
 4. The continuation runs in a fresh Cloud Run request (fresh ~60-min
    lifecycle, fresh 50-min budget).
 
-For small folders (where the loop completes inside one chunk) this is
-invisible. **Math**: assuming ~20s per file (Gemini Flash extraction +
-delays), one chunk processes ~150 files. At 200 files: 1 self-call hop,
-~67min wall time. At 1,000 files: ~7 hops, ~6h. At 10,000+ files:
-graduate to Cloud Run Jobs (`--task-timeout=24h`) — the self-call chain
-becomes inefficient. Visibility on chunk count + elapsed via `sync_runs`
-rows.
+**Operational scale this is sized for:** the only realistic large-scan
+trigger is a new account or campaign being added with its existing
+folder contents. A typical add is well under 500 files; a large add is
+~1–2k files. Steady-state polling deltas are sub-minute work. The 50-min
+chunk budget + 24h running-state ceiling (see Recovery, below) cover
+the realistic worst case with comfortable margin.
 
-The 50-min budget is a constant; tune in `drive.runner.ts` if the
-empirical per-file time differs significantly from 20s.
+**Math.** Per-file extraction averages ~20s (Gemini Flash + inter-file
+delay). One chunk processes ~150 files. A 500-file add fits in 3
+chunks (~2.5h); a 2k-file add takes ~13 chunks (~11h) — still well
+inside the 24h ceiling.
+
+If per-file time turns out to be materially different from 20s in
+practice, tune `CHUNK_BUDGET_MS` in `drive.runner.ts`. Visibility on
+chunk count + elapsed via the `sync_runs` table.
 
 ### Auth (debt — Item 7b)
 
