@@ -469,20 +469,25 @@ entities. When the budget trips:
    lifecycle, fresh 50-min budget).
 
 **Operational scale this is sized for:** the only realistic large-scan
-trigger is a new account or campaign being added with its existing
-folder contents. A typical add is well under 500 files; a large add is
-~1–2k files. Steady-state polling deltas are sub-minute work. The 50-min
-chunk budget + 24h running-state ceiling (see Recovery, below) cover
-the realistic worst case with comfortable margin.
+trigger is a new account or project being added with its existing
+folder contents. Per-project folders top out around 100 files. A
+**pathological** day — winning a new client with a batch of 10 rush
+projects all kicked off at once — is ~1,000 files total across one
+account + ten projects. Steady-state polling deltas are sub-minute
+work. The 50-min chunk budget + 24h running-state ceiling (see
+Recovery, below) cover this with comfortable margin.
 
 **Math.** Per-file extraction averages ~20s (Gemini Flash + inter-file
-delay). One chunk processes ~150 files. A 500-file add fits in 3
-chunks (~2.5h); a 2k-file add takes ~13 chunks (~11h) — still well
-inside the 24h ceiling.
+delay). One chunk processes ~150 files. A typical single-project add
+(~100 files) fits in **one chunk, ~33 minutes** — chunking never
+trips. The pathological 1,000-file batch case takes **~7 chunks, ~6
+hours wall time** — still has 4× margin against the 24h ceiling.
 
-If per-file time turns out to be materially different from 20s in
-practice, tune `CHUNK_BUDGET_MS` in `drive.runner.ts`. Visibility on
-chunk count + elapsed via the `sync_runs` table.
+The chunking is mostly insurance against scenarios that won't materialize
+at this org's scale. If per-file time turns out to be materially
+different from 20s in practice, tune `CHUNK_BUDGET_MS` in
+`drive.runner.ts`. Visibility on chunk count + elapsed via the
+`sync_runs` table.
 
 ### Auth (debt — Item 7b)
 
