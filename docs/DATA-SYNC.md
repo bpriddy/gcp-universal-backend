@@ -16,8 +16,8 @@ human-readable summary.
 | Source Key | Status | Description |
 |-----------|--------|-------------|
 | `google_directory` | Active | Syncs staff from Google Workspace directory (People API) |
+| `google_drive` | Active | Document and folder metadata via Drive's `changes.list` API. Incremental polling on an admin-configurable cadence; full-folder scan as the bootstrap and "run sync now" path. |
 | `workfront` | Coming soon | Project management data from Adobe Workfront |
-| `google_drive` | Coming soon | Document and folder metadata from Google Drive |
 | `staff_metadata_import` | Coming soon | Bulk metadata import from CSV/spreadsheet |
 
 ## Google Directory Sync
@@ -99,6 +99,86 @@ Uses a GCP service account with domain-wide delegation:
 npx tsx scripts/run-directory-sync.ts
 ```
 
+## Google Drive Sync
+
+### How It Works
+
+Drive sync is **incremental polling** via Drive's `changes.list` API. The
+admin-configurable cadence runs as a Cloud Scheduler job (created in
+Terraform) that POSTs to GUB's `/poll` endpoint. The handler:
+
+1. Reads the saved `page_token` from the singleton `drive_sync_state`
+   row.
+2. Calls `changes.list` starting from that token, paginating internally.
+3. Filters returned changes to those inside the configured root folder
+   tree (defensive belt against permission-inheritance edge cases).
+4. If no in-scope changes: persists the new terminal page token, returns
+   200.
+5. If in-scope changes exist: kicks off a full sync (`kickoffFullSync`
+   pattern, fire-and-forget 202), persists the new terminal page token,
+   returns 202.
+6. If the saved token has expired (Drive 410 after ~7d idle), or no
+   token was ever saved: clears the token, returns 503
+   `bootstrap_required`.
+
+Bootstrap and recovery share a single path: `POST /run-full-sync`. It
+discovers + scans every linked account/campaign folder, then captures a
+fresh start page token via `changes.getStartPageToken` at the end of a
+successful run. From that point, `/poll` has somewhere to start.
+
+### Architecture decision: pull, not push
+
+GUB does **not** receive webhook notifications from Drive. There is no
+push channel registration, no `/notify` webhook receiver, no channel-
+expiry renewal. The `/notify` route in the Drive router is reviewer
+**email fan-out** for proposal review — unrelated to Drive's push API.
+The pull architecture trades real-time updates for operational
+simplicity: no channel renewals, no inbound webhook reachability
+concerns, no async delivery failures during outages.
+
+### Chunking and the stale-sync reaper
+
+A single `/run-full-sync` over a multi-thousand-file folder may exceed
+a Cloud Run instance's reliable lifetime. The runner enforces a
+**50-min wall-clock budget per chunk**, checked between entities. When
+the budget trips, the runner persists `chunk_phase` + `chunk_index` to
+`sync_runs`, sets `status='paused'`, and self-POSTs to
+`/run-full-sync/continue` to resume in a fresh Cloud Run request.
+
+If a Cloud Run instance dies between checkpoint persist and self-call
+dispatch, the `sync_run` is left stuck. A **stale-sync reaper** runs at
+the entry of `/poll`, `/run-full-sync`, and `/run-full-sync/continue`,
+detecting stuck rows by their lack of recent `updated_at` activity and
+flipping them to `failed`. Thresholds: `paused > 60 min`, `running >
+24 hr`. Calibrated against this org's actual scale (per-project folder
+ceiling ~100 files; pathological multi-project batch case ~1k files).
+
+See backend README "Drive sync — incremental polling" for full
+operational details (bootstrap procedure, token expiry recovery,
+chunking math, reaper thresholds).
+
+### Authentication
+
+Currently the Drive admin endpoints (`/poll`, `/run-full-sync`,
+`/run-full-sync/continue`, `/cron`, `/notify`, `/sweep-expired`) accept
+any caller — same KNOWN DEBT pattern as `google-directory/cron`. Item
+7b will add OIDC ID-token verification at the gateway in one pass for
+all admin endpoints across both integrations.
+
+### Environment Variables
+
+| Variable | Purpose |
+|----------|---------|
+| `DRIVE_ROOT_FOLDER_ID` | Shared-drive root folder; required for discovery + the in-scope filter on `/poll` |
+| `GOOGLE_DRIVE_SA_KEY_PATH` / `_B64` | Drive SA key (falls back to `GOOGLE_DIRECTORY_SA_KEY_*`) |
+| `GOOGLE_DRIVE_IMPERSONATE_EMAIL` | Optional domain-wide-delegation target |
+| `SELF_BASE_URL` | Self-call target for chunk continuation; falls back to `JWT_ISSUER` |
+| `DRIVE_DELAY_BETWEEN_ACCOUNTS_MS` | Pacing between account scans (default 5000) |
+| `DRIVE_DELAY_BETWEEN_CAMPAIGNS_MS` | Pacing between campaign scans (default 2000) |
+| `DRIVE_DELAY_BETWEEN_FILES_MS` | Pacing between file extractions (default 500) |
+| `DRIVE_MAX_FILE_SIZE_BYTES` | Files larger than this are skipped (default 25 MB) |
+| `DRIVE_PROPOSAL_TTL_DAYS` | Proposal expiry window (default 14) |
+
 ## Sync Run Logging
 
 ### sync_runs Table
@@ -159,10 +239,12 @@ The shared service (`sync-run.service.ts`) provides:
 | `GET` | `/integrations/sync-runs/latest/:source` | Latest run for a source |
 | `GET` | `/integrations/sync-runs/:id` | Full run details |
 | `POST` | `/integrations/google-directory/cron` | Trigger Directory sync |
-| `POST` | `/integrations/google-drive/run-full-sync` | Trigger Drive sync |
-| `POST` | `/integrations/google-drive/cron` | Legacy alias for `/run-full-sync` |
-| `POST` | `/integrations/google-drive/notify` | On-demand reviewer notify fan-out |
-| `POST` | `/integrations/google-drive/sweep-expired` | Cron target — flip expired proposals to `state='expired'` |
+| `POST` | `/integrations/google-drive/poll` | **Cloud Scheduler target** for Drive. Calls `changes.list`; only fires a full sync when in-scope changes exist. 200 / 202 / 503. |
+| `POST` | `/integrations/google-drive/run-full-sync` | Admin "Run sync now" + bootstrap path. Captures a fresh start page token at end of run so the next `/poll` has somewhere to start. Chunked for large folders. |
+| `POST` | `/integrations/google-drive/run-full-sync/continue` | Self-call continuation. Body `{ syncRunId }`. Resumes a paused sync from its checkpoint. |
+| `POST` | `/integrations/google-drive/cron` | Legacy alias for `/run-full-sync`. Retained so older callers don't break. |
+| `POST` | `/integrations/google-drive/notify` | On-demand reviewer email fan-out for pending+unnotified proposals. NOT a webhook receiver. |
+| `POST` | `/integrations/google-drive/sweep-expired` | Cron target — flip expired proposals to `state='expired'`. |
 
 **Admin endpoint auth — known gap:** all POST endpoints above are
 currently unauthenticated. See `drive.router.ts` inline TODO(security).

@@ -97,7 +97,11 @@
       or via API. Wire up Cloud Scheduler or similar for automated runs.
 - [ ] **Add Workfront sync engine.** Requires `WORKFRONT_BASE_URL` and
       `WORKFRONT_API_TOKEN` environment variables.
-- [ ] **Add Google Drive sync engine.** For document metadata ingestion.
+- [x] **Google Drive sync engine** — incremental polling via Drive's
+      `changes.list` API; LLM extraction pipeline + reviewer magic-link
+      flow. Cadence is admin-configurable from gub-admin (Cloud
+      Scheduler job updated via API). See `DATA-SYNC.md` "Google Drive
+      Sync".
 - [ ] **Add staff metadata import.** CSV/spreadsheet bulk import for
       skills, interests, certifications, and other metadata.
 - [ ] **Sync error alerting.** Set up alerts when sync runs fail or

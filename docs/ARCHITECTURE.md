@@ -55,8 +55,9 @@ via the public JWKS endpoint with no callback required.
 - Google access token exchange endpoint (for ADK agent)
 - Staff metadata and resourcing search
 - Data sync engine — Google Directory staff sync (active, LLM-classified),
-  Google Drive LLM extraction (active), with Workfront and staff metadata
-  import planned
+  Google Drive LLM extraction (active, incremental polling via
+  `changes.list` + chunked bootstrap + stale-sync reaper), with Workfront
+  and staff metadata import planned
 - Staff classifier (`src/modules/staff-classifier/`) — source-agnostic
   `{email, displayName}` → `person | skip` decision. Two hard filters +
   batched Gemini with greedy-keep bias. Used by Directory sync today;
