@@ -8,11 +8,36 @@ remaining exposures) lives in internal notes instead of this public log.
 
 ## [Unreleased]
 
+### Drive sync infra (2026-04-29)
+
+- New `terraform/drive_poll.tf` adds the GCP-side wiring for the Drive
+  incremental-poll feature:
+  - `google_cloud_scheduler_job.drive_poll`: hourly POST to
+    `/integrations/google-drive/poll`. Schedule + paused state are
+    `lifecycle.ignore_changes` because gub-admin owns the runtime
+    cadence via the Cloud Scheduler API (Pattern A).
+  - `google_service_account_iam_member.runtime_can_impersonate_drive_sa`:
+    runtime SA gets `roles/iam.serviceAccountTokenCreator` on
+    `gdrive-scanner@`. This is the IAM piece that makes Path B's STS
+    impersonation chain work.
+  - `google_project_iam_custom_role.gub_admin_drive_scheduler_editor`:
+    narrow custom role with just `cloudscheduler.jobs.{get,list,update}`.
+    Predefined roles were too broad; this is the minimum to drive the
+    cadence editor in PR 3.
+  - `google_project_iam_member.gub_admin_drive_scheduler_grant`: grants
+    the custom role to the gub-admin runtime SA.
+- Replaced placeholder `gub-drive-sync@` with the actual SA name
+  `gdrive-scanner@os-test-491819.iam.gserviceaccount.com` across docs
+  and `.env.example`.
+- Workspace-admin actions (DWD grant, bot user provisioning, sharing
+  the bot on each restricted Drive) remain out-of-band — no Terraform
+  surface.
+
 ### Drive auth (2026-04-29)
 
 - **STS impersonation chain** for Drive API auth (Path B in
   `drive.client.ts`), selected when `GOOGLE_DRIVE_TARGET_SA` is set.
-  Cloud Run runtime SA → impersonates dedicated `gub-drive-sync@` SA via
+  Cloud Run runtime SA → impersonates dedicated `gdrive-scanner@` SA via
   `iamcredentials.signJwt` → bot user `@anomaly.com` via DWD. No key
   file. Workaround for Anomaly's restricted Drives that only accept
   `@anomaly.com` accounts as members.

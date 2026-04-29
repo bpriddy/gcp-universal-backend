@@ -168,7 +168,7 @@ restricted Drive.
 ```
 Cloud Run runtime SA  (no key file — uses Application Default Credentials)
   ↓ holds roles/iam.serviceAccountTokenCreator on the next hop
-gub-drive-sync@<project>.iam.gserviceaccount.com  (dedicated Drive SA)
+gdrive-scanner@os-test-491819.iam.gserviceaccount.com  (dedicated Drive SA)
   ↓ Workspace admin granted DWD with scope drive.readonly to this SA only
 bot@anomaly.com  (proxy user)
   ↓ shared by IT on each restricted Drive as Viewer

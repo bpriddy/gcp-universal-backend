@@ -66,6 +66,48 @@ variable "cleanup_time_zone" {
   default     = "UTC"
 }
 
+# ── Drive sync poller ────────────────────────────────────────────────────────
+
+variable "drive_target_sa" {
+  description = <<-EOT
+    Email of the dedicated Drive SA that the runtime SA impersonates via
+    iam.serviceAccountTokenCreator. The Workspace admin grants DWD with
+    drive.readonly to this SA only — never to the runtime SA. Setting
+    GOOGLE_DRIVE_TARGET_SA on Cloud Run to this same value activates
+    Path B in drive.client.ts.
+  EOT
+  type        = string
+  default     = "gdrive-scanner@os-test-491819.iam.gserviceaccount.com"
+}
+
+variable "drive_poll_initial_schedule" {
+  description = <<-EOT
+    Initial cron expression for the Drive poll job. After the first apply,
+    the admin UI in gub-admin owns this value via the Cloud Scheduler API;
+    Terraform's lifecycle.ignore_changes lets that drift without flagging
+    the resource as out of sync. Default is hourly.
+  EOT
+  type        = string
+  default     = "0 * * * *"
+}
+
+variable "drive_poll_time_zone" {
+  description = "Time zone for the Drive poll cron"
+  type        = string
+  default     = "UTC"
+}
+
+variable "gub_admin_runtime_sa" {
+  description = <<-EOT
+    Email of the gub-admin Cloud Run runtime service account. Granted
+    cloudscheduler.jobs.update on the Drive poll job (via custom role)
+    so the admin UI can adjust the cadence at runtime via the Cloud
+    Scheduler API. Convention: sa-gub-admin-<env>@<project>.iam.gserviceaccount.com.
+  EOT
+  type        = string
+  default     = "sa-gub-admin-dev@os-test-491819.iam.gserviceaccount.com"
+}
+
 # ── gub-admin authorization (IAP IAM) ────────────────────────────────────────
 
 variable "admin_emails" {
