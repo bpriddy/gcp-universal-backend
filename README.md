@@ -407,6 +407,100 @@ VALUES (
 
 ---
 
+## Drive sync — incremental polling
+
+The Drive sync uses **incremental polling** via Drive's `changes.list` API.
+Cadence is admin-configurable in gub-admin under Data Sources → Google Drive,
+which writes the cron expression onto a Cloud Scheduler job (the cron is
+the source of truth — gub-admin reads live from the Scheduler on render).
+
+### Endpoints
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /integrations/google-drive/poll` | Cloud Scheduler target. Calls `changes.list` with the saved page token; only kicks off a full sync when there are in-scope changes. 200/202/503 depending on outcome. |
+| `POST /integrations/google-drive/run-full-sync` | Admin "Run sync now" + bootstrap path. Full discover + scan; on success persists a fresh start page token. 202 + syncRunId. |
+| `POST /integrations/google-drive/run-full-sync/continue` | Self-call from the runner when a sync hits its chunk budget. Body: `{ syncRunId }`. |
+| `POST /integrations/google-drive/notify` | On-demand reviewer email fan-out for pending+unnotified proposals. |
+| `POST /integrations/google-drive/sweep-expired` | Cron target. Flips expired pending proposals to `state='expired'`. |
+
+### State
+
+Single-row `drive_sync_state` table:
+
+| Column | Meaning |
+|---|---|
+| `page_token` | The opaque Drive token to pass on the next `changes.list` call. NULL = bootstrap required. |
+| `last_polled_at` | Timestamp of the last poll attempt (any outcome). |
+| `last_outcome` | `no_changes` \| `changes_dispatched` \| `changes_pending_existing_run` \| `bootstrap_required` \| `errored`. |
+| `last_full_sync_run_id` | The most recent `sync_runs.id` that successfully completed a full sync (and thus refreshed `page_token`). |
+
+### Bootstrap
+
+Initial state ships with `page_token = NULL`, so the first poll returns
+`bootstrap_required` (HTTP 503). Recovery — for both fresh installs and
+post-token-expiry — is the same:
+
+```bash
+curl -X POST https://<gub-url>/integrations/google-drive/run-full-sync
+```
+
+`/run-full-sync` does the discover + scan, then captures a fresh start
+page token at the end. Subsequent `/poll` calls have somewhere to start.
+
+### Token expiry
+
+Drive expires page tokens after ~7 days of inactivity. If a poll has been
+broken for that long, the next call returns 410 / `INVALID_PAGE_TOKEN`.
+The handler catches this, clears `page_token`, and surfaces
+`bootstrap_required`. Recovery: same as bootstrap above.
+
+### Chunking
+
+A single `/run-full-sync` may take longer than a Cloud Run service
+instance's reliable lifetime if many files arrived at once. The runner
+enforces a **50-min wall-clock budget per chunk**, checked between
+entities. When the budget trips:
+
+1. Persists `chunk_phase` + `chunk_index` to `sync_runs`.
+2. Sets `status='paused'`.
+3. Self-POSTs to `/run-full-sync/continue` with the `syncRunId`.
+4. The continuation runs in a fresh Cloud Run request (fresh ~60-min
+   lifecycle, fresh 50-min budget).
+
+**Operational scale this is sized for:** the only realistic large-scan
+trigger is a new account or project being added with its existing
+folder contents. Per-project folders top out around 100 files. A
+**pathological** day — winning a new client with a batch of 10 rush
+projects all kicked off at once — is ~1,000 files total across one
+account + ten projects. Steady-state polling deltas are sub-minute
+work. The 50-min chunk budget + 24h running-state ceiling (see
+Recovery, below) cover this with comfortable margin.
+
+**Math.** Per-file extraction averages ~20s (Gemini Flash + inter-file
+delay). One chunk processes ~150 files. A typical single-project add
+(~100 files) fits in **one chunk, ~33 minutes** — chunking never
+trips. The pathological 1,000-file batch case takes **~7 chunks, ~6
+hours wall time** — still has 4× margin against the 24h ceiling.
+
+The chunking is mostly insurance against scenarios that won't materialize
+at this org's scale. If per-file time turns out to be materially
+different from 20s in practice, tune `CHUNK_BUDGET_MS` in
+`drive.runner.ts`. Visibility on chunk count + elapsed via the
+`sync_runs` table.
+
+### Auth (debt — Item 7b)
+
+All admin endpoints (`/poll`, `/run-full-sync`, `/run-full-sync/continue`,
+`/cron`, `/notify`, `/sweep-expired`) currently accept any caller. Item 7b
+adds OIDC ID-token verification at the gateway, scoped to a whitelist of
+caller service-account emails (Cloud Scheduler's SA + gub-admin's runtime
+SA). Until 7b lands, exposing GUB to the public internet without an
+upstream gate (Cloud IAP / a load balancer ACL) would let arbitrary
+callers spend Gemini credits.
+
+---
+
 ## GCP deployment
 
 ### Cloud Run

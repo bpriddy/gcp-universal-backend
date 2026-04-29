@@ -126,6 +126,13 @@ const EnvSchema = z.object({
   // continue to work (the review route was originally served from admin).
   GUB_REVIEW_BASE_URL: z.string().url().optional(),
 
+  // ── Self-call base URL (Drive sync chunked continuation) ───────────────────
+  // Used by drive.runner.ts to POST to its own /run-full-sync/continue
+  // endpoint when a chunk's wall-clock budget trips. Falls back to
+  // JWT_ISSUER (which today is the same value in deployed environments —
+  // both are the service's public Cloud Run URL).
+  SELF_BASE_URL: z.string().url().optional(),
+
   // ── Mail ───────────────────────────────────────────────────────────────────
   // Driver selection. In dev, 'console' logs the rendered email to stdout
   // instead of sending — safe default. In production, set to 'mailgun'.

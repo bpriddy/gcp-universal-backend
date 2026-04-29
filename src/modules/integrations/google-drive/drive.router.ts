@@ -2,20 +2,31 @@
  * drive.router.ts — HTTP surface for Google Drive sync + review.
  *
  * Admin endpoints (currently unauthenticated — KNOWN DEBT):
- *   POST /run-full-sync    — Admin button. Kicks off discover + scan every
- *                            linked account + scan every linked campaign.
- *                            Returns 202 + syncRunId immediately; the run
- *                            completes in the background. 409 if a sync is
- *                            already running.
- *   POST /cron             — Legacy alias. Same behavior as /run-full-sync.
- *                            Retired once Phase 5 points Cloud Scheduler at
- *                            /run-full-sync directly.
- *   POST /notify           — On-demand notify run. Fires the email fan-out
- *                            for any pending+unnotified proposals. Useful
- *                            if dispatch failed during the sync itself.
- *   POST /sweep-expired    — Sweep expired proposals (state=pending +
- *                            expires_at < now) to state='expired'. Cron
- *                            target. Idempotent.
+ *   POST /poll                       — Cloud Scheduler target. Cheap
+ *                                      delta call (changes.list); only fires a
+ *                                      full sync when changes are in-scope.
+ *                                      200 / 202 / 503 depending on outcome.
+ *   POST /run-full-sync              — Admin button + bootstrap path. Full
+ *                                      discover + scan; on success persists a
+ *                                      fresh start page token so subsequent
+ *                                      /poll calls have somewhere to start.
+ *                                      Returns 202 + syncRunId immediately;
+ *                                      run completes in background. 409 if a
+ *                                      sync is already running or paused.
+ *   POST /run-full-sync/continue     — Self-call continuation when a sync hit
+ *                                      its chunk budget. Resumes a paused
+ *                                      sync_run from its checkpoint. Body:
+ *                                      { syncRunId }.
+ *   POST /cron                       — Legacy alias. Same behavior as
+ *                                      /run-full-sync. Kept so nothing breaks
+ *                                      while Cloud Scheduler is migrated.
+ *   POST /notify                     — On-demand notify run. Fires the email
+ *                                      fan-out for pending+unnotified
+ *                                      proposals. Useful if dispatch failed
+ *                                      during the sync itself.
+ *   POST /sweep-expired              — Sweep expired proposals (state=pending
+ *                                      + expires_at < now) to state='expired'.
+ *                                      Cron target. Idempotent.
  *
  *   These endpoints ARE REACHABLE BY ANY INTERNET CALLER. This matches the
  *   pre-existing google-directory/cron pattern so the gub-admin proxy and
@@ -54,7 +65,13 @@ import {
   ReviewTokenError,
   type Decision,
 } from './drive.review';
-import { SyncAlreadyRunningError, startFullSync } from './drive.runner';
+import { runIncrementalPoll } from './drive.poll';
+import {
+  NoSuchPausedSyncError,
+  SyncAlreadyRunningError,
+  continuePausedSync,
+  startFullSync,
+} from './drive.runner';
 
 /**
  * Sweep pending proposals whose expires_at has passed into state='expired'.
@@ -91,6 +108,7 @@ async function kickoffFullSync(): Promise<{ status: number; body: unknown }> {
           code: 'SYNC_ALREADY_RUNNING',
           message: err.message,
           syncRunId: err.existingRunId,
+          existingStatus: err.status,
         },
       };
     }
@@ -102,6 +120,66 @@ router.post('/run-full-sync', async (_req, res, next) => {
   try {
     const { status, body } = await kickoffFullSync();
     res.status(status).json(body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * Continuation endpoint for chunked syncs. Hit by drive.runner.ts when a sync
+ * hits its wall-clock budget mid-run; the runner self-POSTs to this URL with
+ * { syncRunId } to resume in a fresh Cloud Run request.
+ *
+ * Returns 202 + the same syncRunId on success. Returns 4xx if the supplied
+ * syncRunId doesn't refer to an actual paused google_drive sync_run.
+ */
+router.post('/run-full-sync/continue', async (req, res, next) => {
+  try {
+    const body = req.body as { syncRunId?: unknown } | undefined;
+    if (!body || typeof body.syncRunId !== 'string') {
+      res.status(400).json({ error: 'body must be { syncRunId: string }' });
+      return;
+    }
+    const { syncRunId, promise } = await continuePausedSync(body.syncRunId);
+    promise.catch((err: unknown) => {
+      logger.error(
+        { err, syncRunId },
+        '[drive.router] continuation rejected outside runner',
+      );
+    });
+    res.status(202).json({ status: 'sync_resumed', syncRunId });
+  } catch (err) {
+    if (err instanceof NoSuchPausedSyncError) {
+      res.status(404).json({ error: err.message });
+      return;
+    }
+    next(err);
+  }
+});
+
+/**
+ * Cloud Scheduler target. Cheap delta call: ask Drive what's changed since
+ * the last saved page token, dispatch a full sync only when there are
+ * in-scope changes. See drive.poll.ts for the outcome enum.
+ *
+ *   no_changes / changes_pending_existing_run         → 200
+ *   changes_dispatched                                → 202 + syncRunId
+ *   bootstrap_required                                → 503
+ *   errored (re-thrown)                               → next(err) → 500
+ */
+router.post('/poll', async (_req, res, next) => {
+  try {
+    const result = await runIncrementalPoll();
+    if (result.outcome === 'bootstrap_required') {
+      res.status(503).json({ ...result, code: 'BOOTSTRAP_REQUIRED' });
+      return;
+    }
+    if (result.outcome === 'changes_dispatched') {
+      res.status(202).json(result);
+      return;
+    }
+    // 'no_changes' or 'changes_pending_existing_run' — both 200.
+    res.status(200).json(result);
   } catch (err) {
     next(err);
   }
