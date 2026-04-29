@@ -66,6 +66,7 @@ import {
   type Decision,
 } from './drive.review';
 import { runIncrementalPoll } from './drive.poll';
+import { reapStaleSyncs } from './drive.reaper';
 import {
   NoSuchPausedSyncError,
   SyncAlreadyRunningError,
@@ -118,6 +119,9 @@ async function kickoffFullSync(): Promise<{ status: number; body: unknown }> {
 
 router.post('/run-full-sync', async (_req, res, next) => {
   try {
+    // Self-heal stuck rows from prior crashes before checking concurrency.
+    // See drive.reaper.ts for the threshold rationale.
+    await reapStaleSyncs();
     const { status, body } = await kickoffFullSync();
     res.status(status).json(body);
   } catch (err) {
@@ -135,6 +139,11 @@ router.post('/run-full-sync', async (_req, res, next) => {
  */
 router.post('/run-full-sync/continue', async (req, res, next) => {
   try {
+    // Self-heal stuck rows. Note: if THIS sync's row got reaped (e.g.
+    // continuation arrived 65 minutes after pause), continuePausedSync
+    // will fail with NoSuchPausedSyncError → 404, which is the correct
+    // outcome — operator must manually re-trigger /run-full-sync.
+    await reapStaleSyncs();
     const body = req.body as { syncRunId?: unknown } | undefined;
     if (!body || typeof body.syncRunId !== 'string') {
       res.status(400).json({ error: 'body must be { syncRunId: string }' });
@@ -169,6 +178,10 @@ router.post('/run-full-sync/continue', async (req, res, next) => {
  */
 router.post('/poll', async (_req, res, next) => {
   try {
+    // Self-heal stuck rows before polling. If a stuck sync was blocking
+    // dispatch (concurrency guard), this clears it so the poll can fire
+    // a new sync if needed.
+    await reapStaleSyncs();
     const result = await runIncrementalPoll();
     if (result.outcome === 'bootstrap_required') {
       res.status(503).json({ ...result, code: 'BOOTSTRAP_REQUIRED' });

@@ -609,6 +609,11 @@ model SyncRun {
   startedAt   DateTime  @default(now()) @map("started_at") @db.Timestamptz
   completedAt DateTime? @map("completed_at") @db.Timestamptz
   durationMs  Int?      @map("duration_ms")
+  // Heartbeat: bumped on every row update via DB trigger + Prisma @updatedAt.
+  // Used by the Drive stale-sync reaper to detect rows with no recent
+  // progress (vs started_at, which would falsely reap legitimately-long
+  // syncs as soon as they crossed the threshold). See drive.reaper.ts.
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz
 
   // Counters
   totalScanned Int @default(0) @map("total_scanned")
