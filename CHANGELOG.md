@@ -12,8 +12,9 @@ remaining exposures) lives in internal notes instead of this public log.
 
 - New `terraform/drive_poll.tf` adds the GCP-side wiring for the Drive
   incremental-poll feature:
-  - `google_cloud_scheduler_job.drive_poll`: hourly POST to
-    `/integrations/google-drive/poll`. Schedule + paused state are
+  - `google_cloud_scheduler_job.drive_poll`: daily POST to
+    `/integrations/google-drive/poll` (default 07:00 America/New_York,
+    one hour after the Directory sync). Schedule + paused state are
     `lifecycle.ignore_changes` because gub-admin owns the runtime
     cadence via the Cloud Scheduler API (Pattern A).
   - `google_service_account_iam_member.runtime_can_impersonate_drive_sa`:

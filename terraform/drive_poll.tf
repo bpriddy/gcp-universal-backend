@@ -33,7 +33,7 @@
 #      cloudbuild/<env>.yaml. Next deploy auto-switches Drive to Path B.
 ###############################################################################
 
-# ── 1. Cloud Scheduler job: hourly POST to /integrations/google-drive/poll ──
+# ── 1. Cloud Scheduler job: daily POST to /integrations/google-drive/poll ──
 
 resource "google_cloud_scheduler_job" "drive_poll" {
   depends_on = [google_project_service.cloudscheduler]
