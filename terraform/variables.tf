@@ -85,16 +85,23 @@ variable "drive_poll_initial_schedule" {
     Initial cron expression for the Drive poll job. After the first apply,
     the admin UI in gub-admin owns this value via the Cloud Scheduler API;
     Terraform's lifecycle.ignore_changes lets that drift without flagging
-    the resource as out of sync. Default is hourly.
+    the resource as out of sync.
+
+    Default is 07:00 America/New_York (one hour after the Directory sync
+    at 06:00 ET, so the two daily syncs don't pile up on the same minute).
+    Daily is calibrated to this org's actual scale: typical Drive activity
+    is sparse, the rare large-scan trigger is a new account/project add
+    that doesn't need same-hour latency. Admin can tighten via the UI any
+    time without a redeploy.
   EOT
   type        = string
-  default     = "0 * * * *"
+  default     = "0 7 * * *"
 }
 
 variable "drive_poll_time_zone" {
-  description = "Time zone for the Drive poll cron"
+  description = "Time zone for the Drive poll cron. Defaults to America/New_York to match the Directory sync."
   type        = string
-  default     = "UTC"
+  default     = "America/New_York"
 }
 
 variable "gub_admin_runtime_sa" {
