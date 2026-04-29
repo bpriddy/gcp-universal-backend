@@ -605,7 +605,7 @@ model DataSource {
 model SyncRun {
   id          String    @id @default(uuid()) @db.Uuid
   source      String // 'google_directory' | 'workfront' | 'google_drive' | etc.
-  status      String    @default("running") // 'running' | 'success' | 'failed'
+  status      String    @default("running") // 'running' | 'success' | 'failed' | 'paused'
   startedAt   DateTime  @default(now()) @map("started_at") @db.Timestamptz
   completedAt DateTime? @map("completed_at") @db.Timestamptz
   durationMs  Int?      @map("duration_ms")
@@ -618,6 +618,13 @@ model SyncRun {
   skipped      Int @default(0)
   errored      Int @default(0)
 
+  // Chunking checkpoint (Drive sync; null for other sources). When a sync's
+  // wall-clock budget trips, the runner persists where it stopped and a
+  // self-call continuation resumes. status='paused' means "checkpointed,
+  // waiting for the next chunk to fire". See drive.runner.ts.
+  chunkPhase Int? @map("chunk_phase") // 1=discovery, 2=accounts, 3=campaigns, 4=notify
+  chunkIndex Int? @map("chunk_index") // index within the phase's entity list (phases 2,3 only)
+
   // Structured details — skips, errors, warnings, changes with previous values
   details Json?
 
@@ -627,6 +634,33 @@ model SyncRun {
   @@index([source, startedAt(sort: Desc)])
   @@index([status])
   @@map("sync_runs")
+}
+
+// ── Drive incremental-poll state ──────────────────────────────────────────
+// Single-row table (id is hardcoded to 1 by convention; the polling code
+// upserts on that id). Tracks the page token for changes.list, when we last
+// polled, and how the last attempt resolved.
+//
+// Lifecycle:
+//   1. Fresh install: no row, or row with pageToken=null → poll returns
+//      503 bootstrap_required. Operator runs /run-full-sync, which writes a
+//      fresh start page token at end of scan.
+//   2. Steady state: every poll updates lastPolledAt and lastOutcome.
+//      pageToken updates only when changes.list returns its terminal
+//      newStartPageToken (not on intermediate nextPageToken pages).
+//   3. Token expiry (Drive 410 INVALID_PAGE_TOKEN after ~7 days idle):
+//      poll catches it, clears pageToken, sets lastOutcome='bootstrap_required',
+//      returns 503. Same recovery path as initial bootstrap.
+
+model DriveSyncState {
+  id                Int       @id @default(1)
+  pageToken         String?   @map("page_token") @db.Text
+  lastPolledAt      DateTime? @map("last_polled_at") @db.Timestamptz
+  lastOutcome       String?   @map("last_outcome") // 'no_changes' | 'changes_dispatched' | 'bootstrap_required' | 'errored'
+  lastFullSyncRunId String?   @map("last_full_sync_run_id") @db.Uuid
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@map("drive_sync_state")
 }
 
 // ── Prompt presets ────────────────────────────────────────────────────────

@@ -407,6 +407,90 @@ VALUES (
 
 ---
 
+## Drive sync — incremental polling
+
+The Drive sync uses **incremental polling** via Drive's `changes.list` API.
+Cadence is admin-configurable in gub-admin under Data Sources → Google Drive,
+which writes the cron expression onto a Cloud Scheduler job (the cron is
+the source of truth — gub-admin reads live from the Scheduler on render).
+
+### Endpoints
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /integrations/google-drive/poll` | Cloud Scheduler target. Calls `changes.list` with the saved page token; only kicks off a full sync when there are in-scope changes. 200/202/503 depending on outcome. |
+| `POST /integrations/google-drive/run-full-sync` | Admin "Run sync now" + bootstrap path. Full discover + scan; on success persists a fresh start page token. 202 + syncRunId. |
+| `POST /integrations/google-drive/run-full-sync/continue` | Self-call from the runner when a sync hits its chunk budget. Body: `{ syncRunId }`. |
+| `POST /integrations/google-drive/notify` | On-demand reviewer email fan-out for pending+unnotified proposals. |
+| `POST /integrations/google-drive/sweep-expired` | Cron target. Flips expired pending proposals to `state='expired'`. |
+
+### State
+
+Single-row `drive_sync_state` table:
+
+| Column | Meaning |
+|---|---|
+| `page_token` | The opaque Drive token to pass on the next `changes.list` call. NULL = bootstrap required. |
+| `last_polled_at` | Timestamp of the last poll attempt (any outcome). |
+| `last_outcome` | `no_changes` \| `changes_dispatched` \| `changes_pending_existing_run` \| `bootstrap_required` \| `errored`. |
+| `last_full_sync_run_id` | The most recent `sync_runs.id` that successfully completed a full sync (and thus refreshed `page_token`). |
+
+### Bootstrap
+
+Initial state ships with `page_token = NULL`, so the first poll returns
+`bootstrap_required` (HTTP 503). Recovery — for both fresh installs and
+post-token-expiry — is the same:
+
+```bash
+curl -X POST https://<gub-url>/integrations/google-drive/run-full-sync
+```
+
+`/run-full-sync` does the discover + scan, then captures a fresh start
+page token at the end. Subsequent `/poll` calls have somewhere to start.
+
+### Token expiry
+
+Drive expires page tokens after ~7 days of inactivity. If a poll has been
+broken for that long, the next call returns 410 / `INVALID_PAGE_TOKEN`.
+The handler catches this, clears `page_token`, and surfaces
+`bootstrap_required`. Recovery: same as bootstrap above.
+
+### Chunking
+
+A single `/run-full-sync` may take longer than a Cloud Run service
+instance's reliable lifetime if the folder is large. The runner enforces
+a **50-min wall-clock budget per chunk**, checked between entities. When
+the budget trips:
+
+1. Persists `chunk_phase` + `chunk_index` to `sync_runs`.
+2. Sets `status='paused'`.
+3. Self-POSTs to `/run-full-sync/continue` with the `syncRunId`.
+4. The continuation runs in a fresh Cloud Run request (fresh ~60-min
+   lifecycle, fresh 50-min budget).
+
+For small folders (where the loop completes inside one chunk) this is
+invisible. **Math**: assuming ~20s per file (Gemini Flash extraction +
+delays), one chunk processes ~150 files. At 200 files: 1 self-call hop,
+~67min wall time. At 1,000 files: ~7 hops, ~6h. At 10,000+ files:
+graduate to Cloud Run Jobs (`--task-timeout=24h`) — the self-call chain
+becomes inefficient. Visibility on chunk count + elapsed via `sync_runs`
+rows.
+
+The 50-min budget is a constant; tune in `drive.runner.ts` if the
+empirical per-file time differs significantly from 20s.
+
+### Auth (debt — Item 7b)
+
+All admin endpoints (`/poll`, `/run-full-sync`, `/run-full-sync/continue`,
+`/cron`, `/notify`, `/sweep-expired`) currently accept any caller. Item 7b
+adds OIDC ID-token verification at the gateway, scoped to a whitelist of
+caller service-account emails (Cloud Scheduler's SA + gub-admin's runtime
+SA). Until 7b lands, exposing GUB to the public internet without an
+upstream gate (Cloud IAP / a load balancer ACL) would let arbitrary
+callers spend Gemini credits.
+
+---
+
 ## GCP deployment
 
 ### Cloud Run

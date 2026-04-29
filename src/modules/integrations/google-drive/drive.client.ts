@@ -109,3 +109,157 @@ async function streamToBuffer(stream: Readable): Promise<Buffer> {
   }
   return Buffer.concat(chunks);
 }
+
+// ── Changes API (incremental polling) ─────────────────────────────────────────
+
+/**
+ * Ask Drive for a fresh start page token. The token represents "right now —
+ * any subsequent change is captured." Persist it; pass to `listChanges` later.
+ *
+ * Used at the end of /run-full-sync (so the very first /poll has a token to
+ * call from) and as the recovery path when a previously-saved token has
+ * expired (~7 days idle).
+ */
+export async function getStartPageToken(): Promise<string> {
+  const client = driveClient();
+  const res = await client.changes.getStartPageToken({
+    supportsAllDrives: true,
+  });
+  if (!res.data.startPageToken) {
+    throw new Error('Drive returned no startPageToken');
+  }
+  return res.data.startPageToken;
+}
+
+/**
+ * The fields we care about per change. `removed` flags deletions; `file` carries
+ * the post-change file metadata when available. `fileId` is always present.
+ */
+export const CHANGE_FIELDS =
+  'fileId,removed,changeType,time,file(id,name,mimeType,parents,modifiedTime,size,trashed,lastModifyingUser(emailAddress,displayName))';
+
+/**
+ * Iterate all changes since `startToken`, paginating internally. Yields the
+ * full list of changes plus the terminal `newStartPageToken` to persist for
+ * the next call.
+ *
+ * Critical contract:
+ *   - `nextPageToken` (intermediate) is followed automatically. Callers never
+ *     see it. Don't persist intermediate tokens; doing so would cause the
+ *     next poll to re-process the changes between intermediate and terminal.
+ *   - `newStartPageToken` (terminal, returned only on the last page) is what
+ *     callers persist for the next poll cycle.
+ *
+ * Throws `PageTokenExpiredError` when Drive returns 410 / INVALID_PAGE_TOKEN —
+ * the saved token aged past Drive's ~7-day idle window. Recovery: clear
+ * persisted token, run /run-full-sync to bootstrap, persist the fresh token
+ * captured at end of run.
+ */
+export class PageTokenExpiredError extends Error {
+  constructor() {
+    super('Drive page token has expired (>7d idle). Re-run /run-full-sync to recover.');
+    this.name = 'PageTokenExpiredError';
+  }
+}
+
+export interface ListChangesResult {
+  changes: drive_v3.Schema$Change[];
+  newStartPageToken: string;
+}
+
+export async function listChanges(startToken: string): Promise<ListChangesResult> {
+  const client = driveClient();
+  const all: drive_v3.Schema$Change[] = [];
+  let pageToken: string | undefined = startToken;
+  let newStartPageToken: string | undefined;
+
+  while (pageToken) {
+    let res;
+    try {
+      res = await client.changes.list({
+        pageToken,
+        fields: `nextPageToken, newStartPageToken, changes(${CHANGE_FIELDS})`,
+        pageSize: 100,
+        supportsAllDrives: true,
+        includeItemsFromAllDrives: true,
+        // Restrict to "my drive"-ish surface: only changes for files the SA
+        // can see. We additionally filter to our configured root tree at
+        // the consumer (drive.poll.ts) as a defensive belt.
+        spaces: 'drive',
+      });
+    } catch (err) {
+      if (isPageTokenExpired(err)) {
+        throw new PageTokenExpiredError();
+      }
+      throw err;
+    }
+
+    all.push(...(res.data.changes ?? []));
+    newStartPageToken = res.data.newStartPageToken ?? undefined;
+    pageToken = res.data.nextPageToken ?? undefined;
+  }
+
+  if (!newStartPageToken) {
+    // Drive's contract: every paginated terminal response includes
+    // newStartPageToken. If it's missing, something is wrong; treat as
+    // expired and bootstrap rather than silently saving nothing.
+    throw new PageTokenExpiredError();
+  }
+
+  return { changes: all, newStartPageToken };
+}
+
+/** Drive returns 410 with reason="invalidPageToken" when the token has aged out. */
+function isPageTokenExpired(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null) return false;
+  const e = err as { code?: number; errors?: Array<{ reason?: string }> };
+  if (e.code === 410) return true;
+  if (Array.isArray(e.errors)) {
+    return e.errors.some((x) => x?.reason === 'invalidPageToken');
+  }
+  return false;
+}
+
+/**
+ * Walk parent references upward from `fileId` until we find `rootFolderId` or
+ * exhaust parents. Used as a defensive belt in drive.poll.ts: even though
+ * changes.list only returns files the SA can see (which should be just our
+ * root tree), an inheritance-broken subfolder could theoretically widen
+ * visibility. We reject anything outside the configured root.
+ *
+ * Returns `true` if `fileId` is inside `rootFolderId` (or is the root itself).
+ *
+ * Note: this runs `files.get` per ancestor lookup. Cache miss cost scales
+ * with tree depth, not breadth. Acceptable for the typical client/project
+ * folder shape (3–5 levels deep). If trees get truly deep, add a parent-id
+ * cache.
+ */
+export async function isInsideFolder(
+  fileId: string,
+  rootFolderId: string,
+): Promise<boolean> {
+  if (fileId === rootFolderId) return true;
+  const client = driveClient();
+  const visited = new Set<string>();
+  let current = fileId;
+  while (current && !visited.has(current)) {
+    visited.add(current);
+    let res;
+    try {
+      res = await client.files.get({
+        fileId: current,
+        fields: 'id,parents',
+        supportsAllDrives: true,
+      });
+    } catch (err) {
+      const e = err as { code?: number };
+      if (e?.code === 404) return false; // file/parent gone — not inside
+      throw err;
+    }
+    const parents = res.data.parents ?? [];
+    if (parents.includes(rootFolderId)) return true;
+    if (parents.length === 0) return false; // root reached
+    current = parents[0]!; // walk first parent (shared-drive files have at most one)
+  }
+  return false;
+}
