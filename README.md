@@ -489,6 +489,43 @@ different from 20s in practice, tune `CHUNK_BUDGET_MS` in
 `drive.runner.ts`. Visibility on chunk count + elapsed via the
 `sync_runs` table.
 
+### Recovery — stale-sync reaper
+
+The chunking design persists checkpoints between chunks and self-POSTs
+to a continuation endpoint. If a Cloud Run instance dies between
+checkpoint persist and self-call dispatch — or if the self-call itself
+fails for any reason — the `sync_run` is left stuck in `running` or
+`paused`, blocking subsequent syncs (the concurrency guard refuses to
+start a new run while one is in flight).
+
+A **stale-sync reaper** runs at the entry of `/poll`, `/run-full-sync`,
+and `/run-full-sync/continue`. It detects stuck rows by their lack of
+recent activity — `sync_runs.updated_at` is bumped on every row update
+via a DB trigger and Prisma's `@updatedAt`. When a row's `updated_at`
+is older than the threshold for its status, the reaper force-flips it
+to `failed`, freeing the slot.
+
+| Status | Threshold | Why |
+|---|---|---|
+| `paused` | 60 min | Self-call delivery is sub-second. An hour past pause is unambiguously a delivery failure. |
+| `running` | 24 hours | Longer than any realistic legitimate sync at this scale (worst case ~6h, see chunking math above). 4× margin. |
+
+**Cadence interaction.** The reaper runs at request entry, not on a
+fixed schedule. Recovery time is `threshold + (time until next request)`.
+If polling cadence is hourly and a `running` row hits 24h at 11:30, the
+12:00 `/poll` reaps it. If polling is daily, recovery latency can be up
+to 24h after the threshold. Pick polling cadence with this in mind.
+
+**Why heartbeat, not start-time.** Using `started_at` would falsely reap
+a legitimately-progressing 23.5h sync that pauses at hour 24. The
+heartbeat (`updated_at`) bumps on every checkpoint persist and every
+row update, so genuinely-stuck rows trip the threshold but actively-
+progressing ones don't.
+
+The reaper is idempotent (no-op when nothing matches) and transient-DB-
+error-tolerant (logs and returns; does not fail the request that
+triggered it).
+
 ### Auth (debt — Item 7b)
 
 All admin endpoints (`/poll`, `/run-full-sync`, `/run-full-sync/continue`,
