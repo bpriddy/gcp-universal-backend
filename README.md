@@ -526,6 +526,81 @@ The reaper is idempotent (no-op when nothing matches) and transient-DB-
 error-tolerant (logs and returns; does not fail the request that
 triggered it).
 
+### Drive API auth — STS impersonation chain
+
+The Drive client (`drive.client.ts`) supports two auth paths and selects
+between them at boot based on which env vars are set.
+
+**Path A — legacy key-file (fallback for environments without Workspace
+DWD set up).** A service account JSON key is mounted via Secret Manager.
+Drive folders are shared directly with the SA's email. Optional DWD via
+`GOOGLE_DRIVE_IMPERSONATE_EMAIL`. Selected when `GOOGLE_DRIVE_TARGET_SA`
+is unset.
+
+**Path B — STS impersonation chain (production posture).** Selected when
+`GOOGLE_DRIVE_TARGET_SA` is set. The chain:
+
+```
+Cloud Run runtime SA  (via ADC — no key file)
+  ↓ runtime SA has roles/iam.serviceAccountTokenCreator on the next hop
+gub-drive-sync@<project>.iam.gserviceaccount.com  (the dedicated Drive SA)
+  ↓ Workspace admin granted DWD (scope drive.readonly) to this SA only
+bot@anomaly.com  (the @anomaly.com proxy / bot user)
+  ↓ shared by IT on each restricted Drive
+[Client drive] [Internal drive] [...]
+```
+
+The token-mint flow:
+
+1. Drive client uses ADC (runtime SA's ambient identity).
+2. Calls `iamcredentials.signJwt` to sign a JWT *as*
+   `GOOGLE_DRIVE_TARGET_SA`. The JWT carries `sub=GOOGLE_DRIVE_IMPERSONATE_EMAIL`.
+3. Exchanges the signed JWT at `oauth2.googleapis.com/token` for an
+   access token. The token represents the bot user, scoped to `drive.readonly`.
+4. Caches the token until ~5 min before its 1-hour expiry.
+
+**Why this design.** Anomaly's restricted shared drives only allow
+`@anomaly.com` accounts to be added. A service account email can't be
+added directly. The bot user is the workaround: a real Workspace user
+that IT shares on each restricted Drive; the SA impersonates that user
+via DWD. The dedicated `gub-drive-sync@` SA isolates DWD from the
+runtime SA so revocation is surgical (one IAM grant flip kills Drive
+access without touching the rest of the service).
+
+**Egress filter (defense in depth).** All auth paths route through
+`assertSubjectAllowed()` which checks the impersonation subject against
+the boot-time configured `GOOGLE_DRIVE_IMPERSONATE_EMAIL`. The check is
+tautological in the normal flow (we always pass the configured value)
+— its purpose is to make any future code path that takes a subject from
+elsewhere fail loudly rather than silently widen the impersonation
+scope. Defends against future refactors, not against an attacker with
+runtime code execution.
+
+**Honest scope of the spoof defense.** A sufficiently capable attacker
+with runtime code execution on the Cloud Run service can mint tokens
+along the same chain (the runtime SA → impersonate the dedicated SA
+via STS → call signJwt with any DWD subject). The chain adds an audit-
+loggable hop and clean separation/revocation surface but does not
+fundamentally prevent the spoof. The real protections at this layer
+are: scope is locked to `drive.readonly` (no writes/deletes), the bot
+user is only shared on intended drives, and the egress filter catches
+intra-app sloppiness.
+
+### Required GCP setup for Path B
+
+| Step | Where | Action |
+|---|---|---|
+| 1 | GCP IAM | Provision SA `gub-drive-sync@<project>.iam.gserviceaccount.com` |
+| 2 | GCP IAM | Grant Cloud Run runtime SA `roles/iam.serviceAccountTokenCreator` on the new SA |
+| 3 | Workspace Admin | Grant DWD to the new SA's client ID with scope `https://www.googleapis.com/auth/drive.readonly` |
+| 4 | Workspace Admin | Provision the bot user `bot@anomaly.com` (or chosen name) |
+| 5 | IT / Drive owners | Share the bot user on each restricted Drive as Viewer |
+| 6 | Cloud Run env | Set `GOOGLE_DRIVE_TARGET_SA=gub-drive-sync@...` and `GOOGLE_DRIVE_IMPERSONATE_EMAIL=bot@anomaly.com` |
+
+Steps 1-2 are GCP-side and can be Terraformed. Steps 3-5 are Workspace-
+admin actions that don't have a Terraform surface. Step 6 is a
+cloudbuild config change.
+
 ### Auth (debt — Item 7b)
 
 All admin endpoints (`/poll`, `/run-full-sync`, `/run-full-sync/continue`,

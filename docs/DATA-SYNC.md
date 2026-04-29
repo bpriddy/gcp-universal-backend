@@ -157,7 +157,47 @@ See backend README "Drive sync — incremental polling" for full
 operational details (bootstrap procedure, token expiry recovery,
 chunking math, reaper thresholds).
 
-### Authentication
+### Drive API authentication — STS impersonation chain
+
+Anomaly's restricted internal Drives only allow `@anomaly.com` accounts to
+be added. A service account email (`*.iam.gserviceaccount.com`) can't be
+added directly. The Drive client uses an **STS impersonation chain** that
+ends at a real `@anomaly.com` "bot user," which IT shares on each
+restricted Drive.
+
+```
+Cloud Run runtime SA  (no key file — uses Application Default Credentials)
+  ↓ holds roles/iam.serviceAccountTokenCreator on the next hop
+gub-drive-sync@<project>.iam.gserviceaccount.com  (dedicated Drive SA)
+  ↓ Workspace admin granted DWD with scope drive.readonly to this SA only
+bot@anomaly.com  (proxy user)
+  ↓ shared by IT on each restricted Drive as Viewer
+[Restricted client + internal Drives]
+```
+
+The Drive client (`drive.client.ts`) calls `iamcredentials.signJwt` to
+sign a JWT *as* the dedicated Drive SA, with `sub=bot@anomaly.com` in
+the JWT payload. The signed JWT is exchanged at
+`oauth2.googleapis.com/token` for an OAuth access token that represents
+the bot user. That token is used for Drive API calls.
+
+The chain is selected at boot when `GOOGLE_DRIVE_TARGET_SA` is set.
+Without it, the client falls back to a legacy key-file path (Path A in
+`drive.client.ts`) — convenient for dev environments that haven't been
+through the IT setup yet.
+
+**Egress filter.** All auth paths run `assertSubjectAllowed()` against
+the boot-time configured bot user, so a future code path that tries to
+impersonate any other user fails loudly. This is defense-in-depth, not
+absolute prevention — a sufficiently capable RCE attacker can mint tokens
+along the same chain. The real protections at this layer are: scope
+locked to `drive.readonly` (no writes/deletes), bot user only shared on
+intended Drives, and clean revocation via the dedicated SA boundary.
+
+See backend README "Drive API auth — STS impersonation chain" for the
+full GCP/Workspace setup checklist.
+
+### Admin endpoint authentication (debt — Item 7b)
 
 Currently the Drive admin endpoints (`/poll`, `/run-full-sync`,
 `/run-full-sync/continue`, `/cron`, `/notify`, `/sweep-expired`) accept
@@ -170,8 +210,9 @@ all admin endpoints across both integrations.
 | Variable | Purpose |
 |----------|---------|
 | `DRIVE_ROOT_FOLDER_ID` | Shared-drive root folder; required for discovery + the in-scope filter on `/poll` |
-| `GOOGLE_DRIVE_SA_KEY_PATH` / `_B64` | Drive SA key (falls back to `GOOGLE_DIRECTORY_SA_KEY_*`) |
-| `GOOGLE_DRIVE_IMPERSONATE_EMAIL` | Optional domain-wide-delegation target |
+| `GOOGLE_DRIVE_TARGET_SA` | Dedicated Drive SA for the impersonation chain. Setting this enables Path B; leaving unset selects the legacy key-file path. |
+| `GOOGLE_DRIVE_IMPERSONATE_EMAIL` | The `@anomaly.com` bot/proxy user the dedicated SA impersonates via DWD. Mandatory for Path B. |
+| `GOOGLE_DRIVE_SA_KEY_PATH` / `_B64` | Path-A only: legacy SA key (falls back to `GOOGLE_DIRECTORY_SA_KEY_*`). Ignored when Path B is selected. |
 | `SELF_BASE_URL` | Self-call target for chunk continuation; falls back to `JWT_ISSUER` |
 | `DRIVE_DELAY_BETWEEN_ACCOUNTS_MS` | Pacing between account scans (default 5000) |
 | `DRIVE_DELAY_BETWEEN_CAMPAIGNS_MS` | Pacing between campaign scans (default 2000) |
