@@ -79,15 +79,28 @@ const EnvSchema = z.object({
   BROKER_TEST_REDIRECT_URI: z.string().url().optional(),
 
   // ── Google Drive sync ──────────────────────────────────────────────────────
-  // Service account shared into each account/campaign's Drive folder.
-  // One of path or base64 is required to enable the sync.
-  // Falls back to GOOGLE_DIRECTORY_SA_* if drive-specific keys aren't set,
-  // so you can reuse a single SA in dev.
+  // Two auth paths; see drive.client.ts for the full rationale.
+  //
+  // Path A (legacy, key-file): service account JSON key. The SA's email
+  // gets shared on Drive folders directly. Fallback for environments that
+  // haven't migrated to Path B.
   GOOGLE_DRIVE_SA_KEY_PATH: z.string().optional(),
   GOOGLE_DRIVE_SA_KEY_B64: z.string().optional(),
-  // Optional impersonation. When unset, operates as the SA directly — fine
-  // when folders are shared with the SA's email. Set to a domain user if you
-  // need domain-wide delegation to see files the SA isn't explicitly shared on.
+  //
+  // Path B (preferred, STS impersonation chain): the dedicated Drive SA
+  // that the runtime SA impersonates via signJwt. The Workspace admin
+  // grants DWD with scope drive.readonly to THIS SA only — never to the
+  // runtime SA. Setting GOOGLE_DRIVE_TARGET_SA auto-switches Drive auth
+  // to Path B. Runtime SA needs roles/iam.serviceAccountTokenCreator on
+  // this SA.
+  //   GOOGLE_DRIVE_TARGET_SA=gub-drive-sync@<project>.iam.gserviceaccount.com
+  GOOGLE_DRIVE_TARGET_SA: z.string().optional(),
+  //
+  // The bot user (proxy user) the Drive SA impersonates via DWD. This is
+  // the @anomaly.com Workspace user that gets shared on each restricted
+  // Drive. Required for both paths when DWD is in use; mandatory for
+  // Path B. Used by the egress filter in drive.client.ts to assert that
+  // nothing in the call path widens impersonation to a different user.
   GOOGLE_DRIVE_IMPERSONATE_EMAIL: z.string().email().optional(),
 
   // Root folder of the shared Drive that houses all account folders.

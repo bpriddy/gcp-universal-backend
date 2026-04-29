@@ -8,6 +8,26 @@ remaining exposures) lives in internal notes instead of this public log.
 
 ## [Unreleased]
 
+### Drive auth (2026-04-29)
+
+- **STS impersonation chain** for Drive API auth (Path B in
+  `drive.client.ts`), selected when `GOOGLE_DRIVE_TARGET_SA` is set.
+  Cloud Run runtime SA → impersonates dedicated `gub-drive-sync@` SA via
+  `iamcredentials.signJwt` → bot user `@anomaly.com` via DWD. No key
+  file. Workaround for Anomaly's restricted Drives that only accept
+  `@anomaly.com` accounts as members.
+- Legacy key-file path (Path A) retained as fallback for environments
+  that haven't been through the IT setup. Selected when
+  `GOOGLE_DRIVE_TARGET_SA` is unset; preserves current dev behavior.
+- **Egress filter** — `assertSubjectAllowed()` checks the impersonation
+  subject against the boot-time configured `GOOGLE_DRIVE_IMPERSONATE_EMAIL`
+  on every auth-build. Refuses to widen impersonation scope to any other
+  user. Defense in depth against future code paths that might take a
+  subject from elsewhere; not absolute prevention against runtime RCE.
+- New env var `GOOGLE_DRIVE_TARGET_SA`. Documented in README ("Drive API
+  auth — STS impersonation chain") and `docs/DATA-SYNC.md` ("Drive API
+  authentication") with the full GCP + Workspace setup checklist.
+
 ### Drive sync (2026-04-29)
 
 - Replaced full-folder-scan trigger with **incremental polling** via

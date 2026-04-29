@@ -1,19 +1,73 @@
 /**
  * drive.client.ts — Google Drive API client.
  *
- * Auth: service account. Folders must be shared with the SA's email.
- * Optional domain-wide delegation via GOOGLE_DRIVE_IMPERSONATE_EMAIL.
+ * ── Auth (two paths) ────────────────────────────────────────────────────────
  *
- * Falls back to the Directory SA (GOOGLE_DIRECTORY_SA_*) when drive-specific
- * keys aren't set — convenient for dev with one SA.
+ * Path A (legacy, key-file based — kept as fallback for dev without IT setup):
+ *   - Reads a service-account JSON key from GOOGLE_DRIVE_SA_KEY_PATH /
+ *     _B64 (or falls back to GOOGLE_DIRECTORY_SA_KEY_*).
+ *   - Optionally adds DWD via GOOGLE_DRIVE_IMPERSONATE_EMAIL on the JWT.
+ *   - Selected when GOOGLE_DRIVE_TARGET_SA is unset.
  *
- * Auth is built lazily. Importing this module never touches env, so the
- * backend boots even before the SA key is filled in.
+ * Path B (preferred, STS impersonation chain — production posture):
+ *   - Cloud Run runtime SA uses Application Default Credentials (no key file).
+ *   - Calls iamcredentials.signJwt to sign a JWT *as* GOOGLE_DRIVE_TARGET_SA.
+ *     Runtime SA needs roles/iam.serviceAccountTokenCreator on the target SA.
+ *   - The signed JWT carries sub=GOOGLE_DRIVE_IMPERSONATE_EMAIL (the bot user)
+ *     so domain-wide delegation impersonates that user when the JWT is
+ *     exchanged for an access token at oauth2.googleapis.com/token.
+ *   - The Workspace admin grants DWD with scope drive.readonly to
+ *     GOOGLE_DRIVE_TARGET_SA only — NOT to the runtime SA.
+ *   - Selected when GOOGLE_DRIVE_TARGET_SA is set.
+ *
+ * Why two paths exist:
+ *   The current dev deployment uses Path A with the Directory SA's key.
+ *   When IT provisions the dedicated Drive SA + grants DWD, we set
+ *   GOOGLE_DRIVE_TARGET_SA in the Cloud Run env and the runtime auto-switches
+ *   to Path B. The legacy code path remains for any environment that hasn't
+ *   migrated yet.
+ *
+ * ── Egress filter (defense in depth) ────────────────────────────────────────
+ *
+ * Both paths route every Drive auth through assertSubjectAllowed(), which
+ * checks the impersonation subject against the boot-time configured value.
+ * The check is tautological in normal flow (we always pass the configured
+ * value) — its job is to make any future code path that takes a subject
+ * from somewhere else (a request param, an arbitrary helper) fail loudly
+ * rather than silently widen the impersonation scope.
+ *
+ * The real defense remains: the only place the subject is read from is
+ * config.GOOGLE_DRIVE_IMPERSONATE_EMAIL (boot-time env), and the auth
+ * builders never accept it as a parameter. The assertion guards against
+ * future refactors that might break that invariant.
  */
 
 import { google, type drive_v3 } from 'googleapis';
 import { Readable } from 'stream';
 import { config } from '../../../config/env';
+import { logger } from '../../../services/logger';
+
+const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
+const TOKEN_URL = 'https://oauth2.googleapis.com/token';
+const JWT_GRANT_TYPE = 'urn:ietf:params:oauth:grant-type:jwt-bearer';
+
+// ── Egress filter ────────────────────────────────────────────────────────────
+// The bot user we're configured to impersonate. Read once at module load.
+// All auth paths must call assertSubjectAllowed before configuring DWD; an
+// attempt to impersonate any other user fails loudly.
+const ALLOWED_DWD_SUBJECT = config.GOOGLE_DRIVE_IMPERSONATE_EMAIL;
+
+function assertSubjectAllowed(subject: string): void {
+  if (subject !== ALLOWED_DWD_SUBJECT) {
+    const msg =
+      `[drive.client] DWD subject "${subject}" does not match configured ` +
+      `GOOGLE_DRIVE_IMPERSONATE_EMAIL. Refusing to widen impersonation scope.`;
+    logger.error({ requestedSubject: subject, allowedSubject: ALLOWED_DWD_SUBJECT }, msg);
+    throw new Error(msg);
+  }
+}
+
+// ── Path A: legacy key-file auth ────────────────────────────────────────────
 
 function readKey(): { keyFile: string } | { credentials: Record<string, unknown> } {
   const path = config.GOOGLE_DRIVE_SA_KEY_PATH ?? config.GOOGLE_DIRECTORY_SA_KEY_PATH;
@@ -26,26 +80,157 @@ function readKey(): { keyFile: string } | { credentials: Record<string, unknown>
   }
   throw new Error(
     'Google Drive sync requires GOOGLE_DRIVE_SA_KEY_PATH or GOOGLE_DRIVE_SA_KEY_B64 ' +
-      '(or falls back to GOOGLE_DIRECTORY_SA_KEY_* if that is set).',
+      '(or falls back to GOOGLE_DIRECTORY_SA_KEY_* if that is set), ' +
+      'OR set GOOGLE_DRIVE_TARGET_SA to use the STS impersonation chain instead.',
   );
 }
 
-export function buildDriveAuth(): InstanceType<typeof google.auth.GoogleAuth> {
+function buildLegacyKeyAuth(): InstanceType<typeof google.auth.GoogleAuth> {
   const keyMaterial = readKey();
   const impersonate = config.GOOGLE_DRIVE_IMPERSONATE_EMAIL;
+  if (impersonate) assertSubjectAllowed(impersonate);
   return new google.auth.GoogleAuth({
     ...keyMaterial,
-    scopes: ['https://www.googleapis.com/auth/drive.readonly'],
+    scopes: [DRIVE_SCOPE],
     ...(impersonate ? { clientOptions: { subject: impersonate } } : {}),
   });
+}
+
+// ── Path B: STS impersonation chain (no key file) ───────────────────────────
+
+interface CachedToken {
+  accessToken: string;
+  expiresAt: number; // ms since epoch
+}
+
+let cachedDriveToken: CachedToken | null = null;
+
+/**
+ * Sign a JWT *as* the target SA, with the DWD subject in the payload.
+ * Then exchange the JWT for an access token at the Google OAuth2 endpoint.
+ *
+ * Caches the resulting token until ~5 minutes before its expiry; refreshes
+ * transparently on the next call.
+ */
+async function getOptionBAccessToken(): Promise<string> {
+  const targetSa = config.GOOGLE_DRIVE_TARGET_SA;
+  const dwdSubject = config.GOOGLE_DRIVE_IMPERSONATE_EMAIL;
+
+  if (!targetSa) {
+    throw new Error(
+      'GOOGLE_DRIVE_TARGET_SA is required for the STS impersonation chain (Path B).',
+    );
+  }
+  if (!dwdSubject) {
+    throw new Error(
+      'GOOGLE_DRIVE_IMPERSONATE_EMAIL (the @anomaly.com bot user) is required for DWD.',
+    );
+  }
+  assertSubjectAllowed(dwdSubject);
+
+  const now = Date.now();
+  if (cachedDriveToken && cachedDriveToken.expiresAt > now + 5 * 60_000) {
+    return cachedDriveToken.accessToken;
+  }
+
+  // Step 1: build the JWT payload. iss=target SA (signer), sub=bot user (DWD).
+  const nowSec = Math.floor(now / 1000);
+  const payload = JSON.stringify({
+    iss: targetSa,
+    sub: dwdSubject,
+    aud: TOKEN_URL,
+    scope: DRIVE_SCOPE,
+    iat: nowSec,
+    exp: nowSec + 3600,
+  });
+
+  // Step 2: sign the JWT *as* the target SA via iamcredentials.signJwt.
+  // Runtime SA must have roles/iam.serviceAccountTokenCreator on targetSa.
+  const adc = new google.auth.GoogleAuth({
+    scopes: ['https://www.googleapis.com/auth/cloud-platform'],
+  });
+  const iam = google.iamcredentials({ version: 'v1', auth: adc });
+  const signResp = await iam.projects.serviceAccounts.signJwt({
+    name: `projects/-/serviceAccounts/${targetSa}`,
+    requestBody: { payload },
+  });
+  const signedJwt = signResp.data.signedJwt;
+  if (!signedJwt) {
+    throw new Error('iamcredentials.signJwt returned no signedJwt');
+  }
+
+  // Step 3: exchange the signed JWT for an OAuth2 access token. The token
+  // returned has the bot user's identity (DWD) for drive.readonly.
+  const tokenResp = await fetch(TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: JWT_GRANT_TYPE,
+      assertion: signedJwt,
+    }),
+  });
+  if (!tokenResp.ok) {
+    const errBody = await tokenResp.text().catch(() => '<unreadable>');
+    throw new Error(
+      `[drive.client] JWT-bearer token exchange failed: ${tokenResp.status} ${errBody}`,
+    );
+  }
+  const tokenData = (await tokenResp.json()) as {
+    access_token: string;
+    expires_in: number;
+  };
+
+  cachedDriveToken = {
+    accessToken: tokenData.access_token,
+    expiresAt: now + tokenData.expires_in * 1000,
+  };
+  return tokenData.access_token;
+}
+
+function buildOptionBAuth(): InstanceType<typeof google.auth.OAuth2> {
+  // google.auth.OAuth2 (alias for OAuth2Client) supports a refreshHandler
+  // that the googleapis library invokes when it needs a fresh token. Our
+  // handler delegates to getOptionBAccessToken, which has its own caching
+  // layer. The returned expiry_date matches what we cached so the library
+  // doesn't double-refresh.
+  const oauth = new google.auth.OAuth2();
+  oauth.refreshHandler = async () => {
+    const access = await getOptionBAccessToken();
+    const expiry = cachedDriveToken?.expiresAt ?? Date.now() + 3500 * 1000;
+    return { access_token: access, expiry_date: expiry };
+  };
+  return oauth;
+}
+
+// ── Public API ──────────────────────────────────────────────────────────────
+
+/** Path selector. */
+function isOptionB(): boolean {
+  return Boolean(config.GOOGLE_DRIVE_TARGET_SA);
 }
 
 let cachedClient: drive_v3.Drive | null = null;
 export function driveClient(): drive_v3.Drive {
   if (cachedClient) return cachedClient;
-  const auth = buildDriveAuth();
-  cachedClient = google.drive({ version: 'v3', auth });
+  if (isOptionB()) {
+    logger.info(
+      { targetSa: config.GOOGLE_DRIVE_TARGET_SA, botUser: ALLOWED_DWD_SUBJECT },
+      '[drive.client] using STS impersonation chain (Path B)',
+    );
+    cachedClient = google.drive({ version: 'v3', auth: buildOptionBAuth() });
+  } else {
+    logger.info('[drive.client] using legacy key-file auth (Path A)');
+    cachedClient = google.drive({ version: 'v3', auth: buildLegacyKeyAuth() });
+  }
   return cachedClient;
+}
+
+// Kept exported for backward compatibility — callers that built their own
+// auth from this previously will get the right path automatically.
+export function buildDriveAuth():
+  | InstanceType<typeof google.auth.GoogleAuth>
+  | InstanceType<typeof google.auth.OAuth2> {
+  return isOptionB() ? buildOptionBAuth() : buildLegacyKeyAuth();
 }
 
 // ── Low-level helpers ────────────────────────────────────────────────────────
