@@ -93,7 +93,7 @@ const EnvSchema = z.object({
   // runtime SA. Setting GOOGLE_DRIVE_TARGET_SA auto-switches Drive auth
   // to Path B. Runtime SA needs roles/iam.serviceAccountTokenCreator on
   // this SA.
-  //   GOOGLE_DRIVE_TARGET_SA=gub-drive-sync@<project>.iam.gserviceaccount.com
+  //   GOOGLE_DRIVE_TARGET_SA=gdrive-scanner@<project>.iam.gserviceaccount.com
   GOOGLE_DRIVE_TARGET_SA: z.string().optional(),
   //
   // The bot user (proxy user) the Drive SA impersonates via DWD. This is

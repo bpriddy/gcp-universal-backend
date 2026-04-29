@@ -543,7 +543,7 @@ is unset.
 ```
 Cloud Run runtime SA  (via ADC — no key file)
   ↓ runtime SA has roles/iam.serviceAccountTokenCreator on the next hop
-gub-drive-sync@<project>.iam.gserviceaccount.com  (the dedicated Drive SA)
+gdrive-scanner@os-test-491819.iam.gserviceaccount.com  (the dedicated Drive SA)
   ↓ Workspace admin granted DWD (scope drive.readonly) to this SA only
 bot@anomaly.com  (the @anomaly.com proxy / bot user)
   ↓ shared by IT on each restricted Drive
@@ -563,7 +563,7 @@ The token-mint flow:
 `@anomaly.com` accounts to be added. A service account email can't be
 added directly. The bot user is the workaround: a real Workspace user
 that IT shares on each restricted Drive; the SA impersonates that user
-via DWD. The dedicated `gub-drive-sync@` SA isolates DWD from the
+via DWD. The dedicated `gdrive-scanner@` SA isolates DWD from the
 runtime SA so revocation is surgical (one IAM grant flip kills Drive
 access without touching the rest of the service).
 
@@ -590,12 +590,12 @@ intra-app sloppiness.
 
 | Step | Where | Action |
 |---|---|---|
-| 1 | GCP IAM | Provision SA `gub-drive-sync@<project>.iam.gserviceaccount.com` |
+| 1 | GCP IAM | Provision SA `gdrive-scanner@os-test-491819.iam.gserviceaccount.com` |
 | 2 | GCP IAM | Grant Cloud Run runtime SA `roles/iam.serviceAccountTokenCreator` on the new SA |
 | 3 | Workspace Admin | Grant DWD to the new SA's client ID with scope `https://www.googleapis.com/auth/drive.readonly` |
 | 4 | Workspace Admin | Provision the bot user `bot@anomaly.com` (or chosen name) |
 | 5 | IT / Drive owners | Share the bot user on each restricted Drive as Viewer |
-| 6 | Cloud Run env | Set `GOOGLE_DRIVE_TARGET_SA=gub-drive-sync@...` and `GOOGLE_DRIVE_IMPERSONATE_EMAIL=bot@anomaly.com` |
+| 6 | Cloud Run env | Set `GOOGLE_DRIVE_TARGET_SA=gdrive-scanner@...` and `GOOGLE_DRIVE_IMPERSONATE_EMAIL=bot@anomaly.com` |
 
 Steps 1-2 are GCP-side and can be Terraformed. Steps 3-5 are Workspace-
 admin actions that don't have a Terraform surface. Step 6 is a
