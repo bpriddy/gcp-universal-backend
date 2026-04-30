@@ -163,6 +163,7 @@ model Staff {
   driveProposalReviews   DriveChangeProposal[] @relation("DriveProposalReviewerStaff")
   driveProposalDecisions DriveChangeProposal[] @relation("DriveProposalDecidedByStaff")
   promptPresetEdits      PromptPreset[]        @relation("PromptPresetUpdatedByStaff")
+  corsOriginsAdded       CorsAllowedOrigin[]   @relation("CorsOriginAddedByStaff")
 
   @@index([userId])
   @@index([officeId])
@@ -559,6 +560,45 @@ model OAuthAuthCode {
 
   @@index([expiresAt])
   @@map("oauth_auth_codes")
+}
+
+// ── CORS allow-list (dev/staging tooling) ───────────────────────────────────
+// The runtime-mutable allow-list of origins that may make cross-origin
+// requests against this GUB instance. Managed via gub-admin's UI.
+//
+// SCOPE: This is dev/staging tooling, not production hardening. Production
+// CORS should be handled at the edge (WAF, Cloud Armor, load balancer);
+// the originAllowList middleware reading this table is a
+// faster-iteration replacement for the previous static env-var allow-list.
+// See README "CORS allow-list — dev/staging tooling" for the layer split.
+//
+// Reads happen on every request that has an Origin header (except
+// public-by-design bypass paths). Single-row index lookup; no caching
+// today. If profiling ever shows it matters, in-memory cache with TTL is
+// the natural addition.
+
+model CorsAllowedOrigin {
+  id        String   @id @default(uuid()) @db.Uuid
+  origin    String   @unique
+  // Human-readable note: what app / which dev / why. Surfaced in the
+  // admin UI list view so future operators understand who an entry was
+  // for (and whether it's still in use).
+  label     String?
+  // isActive=false is a soft-disable. Keeps the audit history while
+  // taking the origin out of circulation. Hard delete is also supported
+  // by the admin UI for clear-out cases.
+  isActive  Boolean  @default(true) @map("is_active")
+  // Staff.id of the operator who created this entry. Resolved from the
+  // IAP identity by requireActor (Item 4 actor pattern). NULL only for
+  // rows seeded by migration before the actor framework existed.
+  addedBy   String?  @map("added_by") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  addedByStaff Staff? @relation("CorsOriginAddedByStaff", fields: [addedBy], references: [id])
+
+  @@index([origin, isActive])
+  @@map("cors_allowed_origins")
 }
 
 model StaffMetadata {

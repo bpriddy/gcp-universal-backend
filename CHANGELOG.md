@@ -8,6 +8,39 @@ remaining exposures) lives in internal notes instead of this public log.
 
 ## [Unreleased]
 
+### CORS allow-list — DB-backed, admin-controllable (2026-04-30)
+
+Reviewer feedback: requiring a redeploy per origin registration was too
+much friction for dev iteration. Moved the source of truth from the
+cloudbuild substitution to a DB table that gub-admin can edit at
+runtime.
+
+- New `cors_allowed_origins` table (`id`, `origin`, `label`, `is_active`,
+  `added_by` → `staff.id`, `created_at`, `updated_at`). Migration
+  20260430010000 seeds it from the values that previously lived in
+  `cloudbuild/dev.yaml`'s `_CORS_ALLOWED_ORIGINS` substitution.
+- `originAllowList` middleware now queries the DB on each request
+  (single-row index lookup; no caching today). Same friendly 403 body
+  as before, but with updated `fix` guidance pointing at the gub-admin
+  Settings UI rather than cloudbuild.
+- DB lookup failure returns 503 with `CORS_LOOKUP_UNAVAILABLE`. DB-
+  dependent endpoints would be failing anyway in this scenario, so the
+  fail-closed posture isn't a meaningful availability regression — and
+  silently allowing all origins on DB error would be worse.
+- `cloudbuild/dev.yaml` — removed `_CORS_ALLOWED_ORIGINS` substitution
+  and the corresponding `--set-env-vars` entry. The env var schema in
+  `src/config/env.ts` keeps `CORS_ALLOWED_ORIGINS` as deprecated/unread
+  so legacy references don't crash boot; future cleanup PR can remove it
+  outright.
+- README — new "CORS allow-list — dev/staging tooling" section
+  documenting the two-layer architecture (app-layer middleware now;
+  prod edge CORS later) and the contract for the future
+  prod-deploy-promotes-DB-list-to-edge build step.
+
+This is dev/staging tooling only. Production CORS will be edge-level
+(WAF / Cloud Armor / load balancer); the middleware in prod stays
+mounted as defense-in-depth, not as the primary boundary.
+
 ### CORS rejection — informative 403 instead of opaque preflight block (2026-04-30)
 
 Implementer feedback: a fresh consuming-app origin not in the allow-list

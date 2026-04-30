@@ -1,52 +1,63 @@
 /**
  * originAllowList — origin-based gate with a readable rejection.
  *
- * Why this lives at the application layer, not the CORS layer:
- *   The cors library's built-in rejection (returning an Error from the
- *   origin callback) sends a response with no Access-Control-Allow-Origin
- *   header. The browser blocks it and surfaces an opaque
- *   "blocked by CORS policy" error in the dev console. The dev has no
- *   idea what step they missed.
+ * ── Layer split (read this first) ───────────────────────────────────────────
+ * This middleware is **dev/staging tooling**, not production CORS hardening.
+ * Production CORS should be handled at the edge — a WAF, Cloud Armor, or
+ * load-balancer-level origin policy — that blocks bad origins before they
+ * ever reach this app. This middleware staying mounted in prod is
+ * defense-in-depth, not the primary boundary.
  *
- *   By moving the gate here — after the CORS layer has already attached
- *   ACAO + Allow-Credentials to the response — the rejection body is
- *   readable to the browser, and we can put actionable guidance in it.
+ * The dev/staging job: let admins add new allowed origins at runtime
+ * (without a redeploy) when implementers spin up new consuming-app forks
+ * or preview environments. The cors_allowed_origins table is the live
+ * source of truth; gub-admin's UI does CRUD; this middleware queries on
+ * each request.
  *
- * What this middleware does:
- *   1. If there's no Origin header, pass through. Server-to-server
- *      callers, curl, Postman, Cloud Scheduler — all originless. They
- *      hit auth checks downstream; this middleware doesn't gate them.
- *   2. If the path is in BYPASS_PATHS, pass through. Public discovery
- *      endpoints (JWKS, OAuth server metadata) and health checks must
- *      be reachable from any origin by design.
- *   3. If the origin matches an entry in CORS_ALLOWED_ORIGINS, pass
- *      through. Strict equality match — same security posture as
- *      before, no wildcards.
- *   4. Otherwise: 403 with a structured JSON body that names the
- *      rejected origin and tells the dev exactly which file to edit.
+ * ── Why this gate runs at the application layer, not the cors lib ──────────
+ * The cors library's built-in rejection (origin callback returning an
+ * Error) sends a response with no Access-Control-Allow-Origin header.
+ * The browser blocks it and surfaces an opaque "blocked by CORS policy"
+ * error in the dev console. The dev has no idea what step they missed.
  *
- * What this middleware deliberately does NOT do:
+ * By moving the gate here — after the CORS layer has already attached
+ * ACAO + Allow-Credentials to the response — the rejection body is
+ * readable to the browser, and we put actionable guidance in it ("the
+ * origin '...' isn't registered, ask the admin to add it via the
+ * gub-admin CORS settings page").
+ *
+ * ── What this middleware does ──────────────────────────────────────────────
+ *   1. No Origin header → pass through. Server-to-server, curl, Postman,
+ *      Cloud Scheduler — all originless. Auth middleware downstream
+ *      handles their trust.
+ *   2. Path in BYPASS_PATHS → pass through. Public discovery endpoints
+ *      (JWKS, OAuth server metadata) and healthchecks must be reachable
+ *      from any origin by design.
+ *   3. Origin in cors_allowed_origins (with is_active=true) → pass through.
+ *      Strict equality match — no wildcards, no fuzzy logic.
+ *   4. Otherwise → 403 with a structured JSON body that names the
+ *      rejected origin and tells the dev exactly how to get unblocked.
+ *
+ * ── What this deliberately does NOT do ─────────────────────────────────────
  *   - Wildcard / pattern matching. Discussed and rejected: ephemeral
- *     subdomain wildcards (e.g. `*.replit.dev`) widen the attack surface
- *     for what is, ultimately, a defense-in-depth layer. The right
- *     trade is "explicit list, friendly rejection" — not "permissive
- *     list, no friction."
- *   - Auto-registration. A future enhancement could let unknown origins
- *     register themselves into a "pending" status, viewable in gub-admin
- *     for manual approval. Out of scope for this fix.
+ *     subdomain wildcards widen the attack surface for a defense-in-depth
+ *     layer. The right trade is "explicit list, friendly rejection,
+ *     admin self-service" — not "permissive list, no friction."
+ *   - In-memory caching. Single-row index lookup per request; sub-ms.
+ *     Add caching if profiling ever shows it matters.
+ *   - Auto-registration. Could let unknown origins register themselves
+ *     into a "pending" status for admin approval. Out of scope today;
+ *     would be a future enhancement.
  */
 
 import type { Request, Response, NextFunction } from 'express';
-import { config } from '../config/env';
+import { prisma } from '../config/database';
 import { logger } from '../services/logger';
 
 /**
  * Paths that are public-by-design — discovery endpoints + healthchecks.
- * These must be reachable from any origin (consuming-app SDKs fetch the
- * JWKS to verify GUB JWTs; load balancers + uptime checks hit /health).
- *
- * Match by exact path or path prefix — adding a trailing `*` enables
- * prefix matching for nested paths.
+ * Reachable from any origin so SDK verifiers (consuming apps fetch JWKS)
+ * and load balancers / uptime checks stay functional.
  */
 const BYPASS_PATHS = new Set<string>([
   '/.well-known/jwks.json',
@@ -59,11 +70,15 @@ function isBypassPath(path: string): boolean {
   return BYPASS_PATHS.has(path);
 }
 
-export function originAllowList(req: Request, res: Response, next: NextFunction): void {
+export async function originAllowList(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
   const origin = req.headers.origin;
 
   // Originless requests: server-to-server, curl, Postman. CORS doesn't
-  // apply to these; auth middleware downstream handles trust.
+  // apply; auth middleware downstream handles trust.
   if (!origin) {
     next();
     return;
@@ -75,19 +90,41 @@ export function originAllowList(req: Request, res: Response, next: NextFunction)
     return;
   }
 
-  // Strict equality match. No wildcards by design — see file header.
-  if (config.CORS_ALLOWED_ORIGINS.includes(origin)) {
+  // DB lookup. Single-row, indexed on (origin, is_active).
+  let allowed = false;
+  try {
+    const row = await prisma.corsAllowedOrigin.findFirst({
+      where: { origin, isActive: true },
+      select: { id: true },
+    });
+    allowed = !!row;
+  } catch (err) {
+    // DB outage. Fail closed for unknown origins (rejecting with 403
+    // is correct — the alternative is silently allowing any origin).
+    // Note: DB-dependent endpoints would be failing anyway in this
+    // scenario, so this isn't a meaningful availability regression.
+    logger.error(
+      { err, origin },
+      '[originAllowList] DB lookup failed — rejecting request',
+    );
+    res.status(503).json({
+      error: 'CORS_LOOKUP_UNAVAILABLE',
+      message: 'CORS allow-list is temporarily unavailable. Try again shortly.',
+    });
+    return;
+  }
+
+  if (allowed) {
     next();
     return;
   }
 
   // Origin not allowed — return a readable 403 with actionable guidance.
   // The cors layer has already attached ACAO + Allow-Credentials, so the
-  // browser CAN read this body (unlike a CORS-layer rejection, which it
-  // cannot).
+  // browser CAN read this body (unlike a CORS-layer rejection).
   logger.warn(
     { origin, path: req.path, method: req.method },
-    '[originAllowList] origin not in CORS_ALLOWED_ORIGINS — rejecting with 403',
+    '[originAllowList] origin not in allow-list — rejecting with 403',
   );
 
   res.status(403).json({
@@ -95,14 +132,11 @@ export function originAllowList(req: Request, res: Response, next: NextFunction)
     origin,
     message:
       `The origin '${origin}' is not registered as a consumer of this GUB instance. ` +
-      `If you're a developer setting up a new app, ask the GUB operator to add your ` +
-      `origin to the CORS_ALLOWED_ORIGINS list. In dev, that means editing ` +
-      `cloudbuild/dev.yaml's _CORS_ALLOWED_ORIGINS substitution and pushing to the ` +
-      `dev branch to trigger a redeploy.`,
+      `Ask a GUB admin to add it via the gub-admin CORS settings page. ` +
+      `The change takes effect on the next request — no redeploy needed.`,
     fix: {
-      file: 'cloudbuild/<env>.yaml',
-      key: '_CORS_ALLOWED_ORIGINS',
-      action: `Append '${origin}' to the comma-separated list, then push to the deploy branch.`,
+      surface: 'gub-admin → Settings → CORS allow-list',
+      action: `Click "Add origin", paste '${origin}', save.`,
     },
   });
 }

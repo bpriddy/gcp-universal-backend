@@ -613,6 +613,73 @@ callers spend Gemini credits.
 
 ---
 
+## CORS allow-list — dev/staging tooling
+
+CORS protection in this system is **two-layer**, with each layer doing a
+different job at a different point in the system's lifecycle:
+
+| Layer | Where | What it does | When it's the primary boundary |
+|---|---|---|---|
+| **App-layer middleware** | `src/middleware/originAllowList.ts`, backed by the `cors_allowed_origins` DB table | Reads the runtime-mutable allow-list, returns a structured 403 with actionable guidance for unknown origins | Dev + staging |
+| **Edge CORS** | WAF / Cloud Armor / load balancer (NOT YET STOOD UP) | Blocks unknown origins before they reach the app | Production |
+
+In dev/staging today, the app-layer middleware IS the protection. In
+production, the edge will be the actual security boundary; the
+middleware will stay mounted as defense-in-depth (cheap; redundant).
+The two layers don't replace each other — they cover different
+operational realities.
+
+### Dev/staging — runtime-mutable allow-list
+
+The `cors_allowed_origins` table is the source of truth. Each row:
+`(id, origin, label, isActive, addedBy, createdAt, updatedAt)`. The
+`originAllowList` middleware queries on every request that has an
+`Origin` header (except public-by-design bypass paths: `/.well-known/*`
+and `/health`).
+
+Adding an origin:
+1. A dev hits the wall — request blocked, browser console shows a
+   structured 403 with the rejected origin.
+2. Dev sends the origin to a GUB admin.
+3. Admin opens **gub-admin → Settings → CORS allow-list**, pastes the
+   origin, gives it a label, saves.
+4. Change is live on the next request — no redeploy.
+
+The audit log captures every add/remove via the Item 4 actor pattern.
+
+### Production — edge CORS (planned)
+
+When the prod environment stands up, the deploy pipeline gets a new
+build step that promotes the dev allow-list state to the prod edge:
+
+```
+Cloud Build (prod deploy) →
+  1. SELECT origin FROM cors_allowed_origins WHERE is_active = true
+  2. Transform to the edge CORS format (Cloud Armor policy / LB
+     allow-list / whatever edge mechanism is chosen)
+  3. Apply edge config update
+  4. Continue with Cloud Run revision deploy
+```
+
+The middleware stays mounted in prod as defense-in-depth — redundant
+once the edge is filtering, but cheap. The edge is the security
+boundary; the middleware is the safety net.
+
+This automation isn't built yet (prod doesn't exist; the edge mechanism
+isn't decided). When prod arrives, this section becomes a fill-in-the-
+blanks task: pick the edge mechanism, write the build step, drop the
+hardcoded `migration_seed → cloudbuild` path entirely.
+
+### Why we don't allow wildcards
+
+`https://*.replit.dev` and similar patterns were considered and
+rejected. They turn an explicit-registration check into a near-anyone
+check; the security trade-off doesn't carry its weight at the
+defense-in-depth layer. The friendly 403 + admin self-service replaces
+the original "redeploy per origin" friction without widening the gate.
+
+---
+
 ## GCP deployment
 
 ### Cloud Run

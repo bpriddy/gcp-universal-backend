@@ -40,9 +40,15 @@ const EnvSchema = z.object({
   JWT_ISSUER: z.string().default('https://auth.example.com'),
   JWT_AUDIENCE: z.string().default('https://api.example.com'),
 
+  // DEPRECATED — the source of truth moved to the cors_allowed_origins
+  // DB table (see migration 20260430010000_cors_allowed_origins and the
+  // originAllowList middleware). The env var is no longer read by the
+  // running app; kept in the schema only so any leftover references
+  // don't crash boot. Can be removed entirely in a future cleanup PR
+  // once we're confident nothing in the deploy pipeline still sets it.
   CORS_ALLOWED_ORIGINS: z
     .string()
-    .default('http://localhost:5173')
+    .default('')
     .transform((val) => val.split(',').map((s) => s.trim()).filter(Boolean)),
 
   RATE_LIMIT_WINDOW_MS: z.string().default('900000').transform(Number),
