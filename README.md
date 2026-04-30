@@ -5,6 +5,12 @@ A universal auth gateway for GCP-hosted applications. Accepts a Google OAuth tok
 > **POC Status:** This system is a working proof of concept that demonstrates
 > end-to-end functionality across three repos. See the [docs/](./docs/) folder
 > for comprehensive documentation intended for vendor onboarding.
+>
+> **No production environment, deploy pipeline, or CI/CD strategy has
+> been planned in detail yet.** Anything in this README labeled "prod",
+> "production", or referring to a future deploy pipeline is forward-
+> looking design intent, not a description of current state. The dev
+> environment described here is the entire system that exists today.
 
 ## Documentation
 
@@ -615,8 +621,20 @@ callers spend Gemini credits.
 
 ## CORS allow-list — dev/staging tooling
 
-CORS protection in this system is **two-layer**, with each layer doing a
-different job at a different point in the system's lifecycle:
+> **⚠ Status (2026-04-30):** **No production environment, prod deploy
+> pipeline, or CI/CD strategy has been planned in detail yet.**
+> Everything labeled "prod" or "edge CORS" below is forward-looking
+> design intent — describing what *should* happen when the prod
+> environment, edge security mechanism, and deploy pipeline are
+> eventually built. Today, the dev/staging system described in this
+> section is the entire CORS protection that exists. The "two-layer"
+> framing is a design contract that captures intent, not current
+> implementation. When prod arrives, the choices around edge
+> mechanism (Cloud Armor / LB / WAF), promotion flow, and CI/CD
+> tooling all get made then — none of it is fixed today.
+
+CORS protection in this system is **two-layer by design**, with each layer
+intended for a different operational reality:
 
 | Layer | Where | What it does | When it's the primary boundary |
 |---|---|---|---|
@@ -647,10 +665,11 @@ Adding an origin:
 
 The audit log captures every add/remove via the Item 4 actor pattern.
 
-### Production — edge CORS (planned)
+### Production — edge CORS (planned, not built)
 
-When the prod environment stands up, the deploy pipeline gets a new
-build step that promotes the dev allow-list state to the prod edge:
+**No prod environment exists today.** The flow described here is forward
+planning — written down now so when the prod environment + pipeline get
+built, this is a fill-in-the-blanks task rather than a re-derivation:
 
 ```
 Cloud Build (prod deploy) →
@@ -665,10 +684,12 @@ The middleware stays mounted in prod as defense-in-depth — redundant
 once the edge is filtering, but cheap. The edge is the security
 boundary; the middleware is the safety net.
 
-This automation isn't built yet (prod doesn't exist; the edge mechanism
-isn't decided). When prod arrives, this section becomes a fill-in-the-
-blanks task: pick the edge mechanism, write the build step, drop the
-hardcoded `migration_seed → cloudbuild` path entirely.
+**None of the above exists in code or infra today.** No prod project,
+no edge mechanism chosen, no build step written. This whole subsection
+is a design contract for a future iteration. When prod stands up, the
+operator picks the edge mechanism (Cloud Armor / LB ACL / WAF / etc.),
+writes the build step, and updates this section to "current state" —
+with a Terraform module link or a runbook page replacing this prose.
 
 ### Why we don't allow wildcards
 

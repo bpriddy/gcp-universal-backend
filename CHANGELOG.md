@@ -37,9 +37,15 @@ runtime.
   prod edge CORS later) and the contract for the future
   prod-deploy-promotes-DB-list-to-edge build step.
 
-This is dev/staging tooling only. Production CORS will be edge-level
-(WAF / Cloud Armor / load balancer); the middleware in prod stays
-mounted as defense-in-depth, not as the primary boundary.
+This is dev/staging tooling only. Production CORS would be edge-level
+(WAF / Cloud Armor / load balancer); the middleware in prod would stay
+mounted as defense-in-depth, not as the primary boundary. **No
+production environment, prod deploy pipeline, or CI/CD strategy has
+been planned in detail yet** — anything in the README or docs labeled
+"prod" is forward-looking design intent rather than current state.
+Status callouts have been added to README's CORS section, README's
+top-level POC banner, and `docs/PRODUCTION-CHECKLIST.md` to make this
+unambiguous.
 
 ### CORS rejection — informative 403 instead of opaque preflight block (2026-04-30)
 
