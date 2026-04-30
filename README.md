@@ -5,6 +5,12 @@ A universal auth gateway for GCP-hosted applications. Accepts a Google OAuth tok
 > **POC Status:** This system is a working proof of concept that demonstrates
 > end-to-end functionality across three repos. See the [docs/](./docs/) folder
 > for comprehensive documentation intended for vendor onboarding.
+>
+> **No production environment, deploy pipeline, or CI/CD strategy has
+> been planned in detail yet.** Anything in this README labeled "prod",
+> "production", or referring to a future deploy pipeline is forward-
+> looking design intent, not a description of current state. The dev
+> environment described here is the entire system that exists today.
 
 ## Documentation
 
@@ -610,6 +616,88 @@ caller service-account emails (Cloud Scheduler's SA + gub-admin's runtime
 SA). Until 7b lands, exposing GUB to the public internet without an
 upstream gate (Cloud IAP / a load balancer ACL) would let arbitrary
 callers spend Gemini credits.
+
+---
+
+## CORS allow-list — dev/staging tooling
+
+> **⚠ Status (2026-04-30):** **No production environment, prod deploy
+> pipeline, or CI/CD strategy has been planned in detail yet.**
+> Everything labeled "prod" or "edge CORS" below is forward-looking
+> design intent — describing what *should* happen when the prod
+> environment, edge security mechanism, and deploy pipeline are
+> eventually built. Today, the dev/staging system described in this
+> section is the entire CORS protection that exists. The "two-layer"
+> framing is a design contract that captures intent, not current
+> implementation. When prod arrives, the choices around edge
+> mechanism (Cloud Armor / LB / WAF), promotion flow, and CI/CD
+> tooling all get made then — none of it is fixed today.
+
+CORS protection in this system is **two-layer by design**, with each layer
+intended for a different operational reality:
+
+| Layer | Where | What it does | When it's the primary boundary |
+|---|---|---|---|
+| **App-layer middleware** | `src/middleware/originAllowList.ts`, backed by the `cors_allowed_origins` DB table | Reads the runtime-mutable allow-list, returns a structured 403 with actionable guidance for unknown origins | Dev + staging |
+| **Edge CORS** | WAF / Cloud Armor / load balancer (NOT YET STOOD UP) | Blocks unknown origins before they reach the app | Production |
+
+In dev/staging today, the app-layer middleware IS the protection. In
+production, the edge will be the actual security boundary; the
+middleware will stay mounted as defense-in-depth (cheap; redundant).
+The two layers don't replace each other — they cover different
+operational realities.
+
+### Dev/staging — runtime-mutable allow-list
+
+The `cors_allowed_origins` table is the source of truth. Each row:
+`(id, origin, label, isActive, addedBy, createdAt, updatedAt)`. The
+`originAllowList` middleware queries on every request that has an
+`Origin` header (except public-by-design bypass paths: `/.well-known/*`
+and `/health`).
+
+Adding an origin:
+1. A dev hits the wall — request blocked, browser console shows a
+   structured 403 with the rejected origin.
+2. Dev sends the origin to a GUB admin.
+3. Admin opens **gub-admin → Settings → CORS allow-list**, pastes the
+   origin, gives it a label, saves.
+4. Change is live on the next request — no redeploy.
+
+The audit log captures every add/remove via the Item 4 actor pattern.
+
+### Production — edge CORS (planned, not built)
+
+**No prod environment exists today.** The flow described here is forward
+planning — written down now so when the prod environment + pipeline get
+built, this is a fill-in-the-blanks task rather than a re-derivation:
+
+```
+Cloud Build (prod deploy) →
+  1. SELECT origin FROM cors_allowed_origins WHERE is_active = true
+  2. Transform to the edge CORS format (Cloud Armor policy / LB
+     allow-list / whatever edge mechanism is chosen)
+  3. Apply edge config update
+  4. Continue with Cloud Run revision deploy
+```
+
+The middleware stays mounted in prod as defense-in-depth — redundant
+once the edge is filtering, but cheap. The edge is the security
+boundary; the middleware is the safety net.
+
+**None of the above exists in code or infra today.** No prod project,
+no edge mechanism chosen, no build step written. This whole subsection
+is a design contract for a future iteration. When prod stands up, the
+operator picks the edge mechanism (Cloud Armor / LB ACL / WAF / etc.),
+writes the build step, and updates this section to "current state" —
+with a Terraform module link or a runbook page replacing this prose.
+
+### Why we don't allow wildcards
+
+`https://*.replit.dev` and similar patterns were considered and
+rejected. They turn an explicit-registration check into a near-anyone
+check; the security trade-off doesn't carry its weight at the
+defense-in-depth layer. The friendly 403 + admin self-service replaces
+the original "redeploy per origin" friction without widening the gate.
 
 ---
 

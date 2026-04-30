@@ -1,5 +1,18 @@
 # Production Checklist
 
+> **Status (2026-04-30): no production environment, prod deploy
+> pipeline, or CI/CD strategy has been planned in detail yet.**
+> Some pieces are sketched in design contracts scattered across
+> READMEs (e.g., the "Production — edge CORS (planned, not built)"
+> subsection in the backend README) and in some scattered prose. The
+> rest — the prod GCP project itself, the prod-vs-dev branching
+> strategy, the deploy promotion flow, the build/test/promote
+> pipeline, monitoring + alerting setup, secret rotation cadence,
+> on-call posture, etc. — has **not been decided**. Items in this
+> checklist describe what production *should* address when it's
+> built; they do not describe current state. Treat as forward-looking
+> guidance, not a status report.
+
 > This POC demonstrates end-to-end functionality. The items below outline
 > what a vendor with infrastructure, security, and backend expertise
 > should address to bring this to production.
