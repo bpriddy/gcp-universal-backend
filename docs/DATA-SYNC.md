@@ -16,6 +16,7 @@ human-readable summary.
 | Source Key | Status | Description |
 |-----------|--------|-------------|
 | `google_directory` | Active | Syncs staff from Google Workspace directory (People API) |
+| `google_groups` | Active | Workspace groups → `teams` + `team_members` via Admin SDK Directory API. Each group becomes a team; members are resolved to staff by email, unresolved members get unlinked rows for manual fix. |
 | `google_drive` | Active | Document and folder metadata via Drive's `changes.list` API. Incremental polling on an admin-configurable cadence; full-folder scan as the bootstrap and "run sync now" path. |
 | `workfront` | Coming soon | Project management data from Adobe Workfront |
 | `staff_metadata_import` | Coming soon | Bulk metadata import from CSV/spreadsheet |
@@ -98,6 +99,87 @@ Uses a GCP service account with domain-wide delegation:
 ```bash
 npx tsx scripts/run-directory-sync.ts
 ```
+
+## Google Groups Sync
+
+### How It Works
+
+Workspace Groups (`groups.google.com/all-groups`) are the authoritative
+source for the `teams` table. Each Workspace group becomes a team; the
+group's members become rows in `team_members`.
+
+Pipeline:
+
+1. Fetch all groups in the configured domain via Admin SDK Directory API
+   (`directory_v1.groups.list`).
+2. For each group, fetch its members (`directory_v1.members.list`,
+   filtered to `type=USER` — nested groups + external addresses are
+   ignored).
+3. Match the group to an existing team:
+   - Primary: `team_external_ids` row with `system='google_groups'` and
+     `external_id = <group.id>`.
+   - Fallback: `teams.name = group.name` (handles teams created manually
+     before the first sync — links them via external_id on first match).
+   - Else: create a new team + initial change rows.
+4. Diff name + description → write `team_changes` rows.
+5. Resolve member emails to `staff.id` via lookup. Members that match get
+   linked rows in `team_members`; members that don't match get **unlinked
+   rows** (`staff_id=NULL`, `source_email=<email>`, `unlinked=true`) so
+   the admin UI can surface them for fix.
+6. "Managed set" deletion: rows with `source='google_groups_sync'` that
+   no longer correspond to a Google member are deleted. Rows with
+   `source='manual'` are preserved unconditionally.
+
+Greedy: every group is treated as a team. No filtering by name/size/etc.
+If a group shouldn't be a team (distribution lists, etc.), an admin can
+flip `isActive=false` on the team manually after the first sync.
+
+### Authentication
+
+Reuses the Directory sync's SA + DWD impersonation user — same SA
+(`GOOGLE_DIRECTORY_SA_KEY_*`), same impersonation
+(`GOOGLE_DIRECTORY_IMPERSONATE_EMAIL`). The DWD client must additionally
+have:
+
+- `https://www.googleapis.com/auth/admin.directory.group.readonly`
+- `https://www.googleapis.com/auth/admin.directory.group.member.readonly`
+
+added to its scope whitelist in Workspace Admin Console. (The directory
+sync uses `directory.readonly` — different scope, same OAuth client.)
+
+### Environment Variables
+
+| Variable | Purpose |
+|----------|---------|
+| `GOOGLE_GROUPS_DOMAIN` | Workspace domain whose groups to enumerate (e.g. `anomaly.com`). Required when the sync runs. |
+| `GOOGLE_GROUPS_DELAY_BETWEEN_GROUPS_MS` | Pacing between per-group `members.list` calls (default 1000ms) |
+| `GOOGLE_DIRECTORY_SA_KEY_PATH` / `_B64` | SA key — reused from Directory sync |
+| `GOOGLE_DIRECTORY_IMPERSONATE_EMAIL` | DWD impersonation target — reused from Directory sync |
+
+### Schema
+
+- `teams` — unchanged.
+- **`team_external_ids`** (new) — mirrors `staff_external_ids`. Stable
+  mapping from Google Group ID → team.id. `(system, external_id)` is
+  unique.
+- `team_members` (evolved):
+  - `staff_id` is now nullable.
+  - New columns: `source_email`, `unlinked`, `source` (`'manual'` or
+    `'google_groups_sync'`).
+  - CHECK constraint: a row with NULL `staff_id` must have non-NULL
+    `source_email`.
+  - Two partial unique indexes: one for linked rows (`team_id, staff_id`
+    where `staff_id IS NOT NULL`), one for unlinked (`team_id,
+    source_email` where `staff_id IS NULL`).
+- `team_changes` — unchanged; the sync writes name/description diffs.
+
+### Triggering
+
+`POST /integrations/google-groups/cron` — fire-and-forget. Returns 202
+immediately; sync runs in the background. Cloud Scheduler hits this
+daily at 06:30 ET (30 min after Directory). Same KNOWN DEBT as the
+other admin endpoints: no caller authentication today, addressed in
+Item 7b.
 
 ## Google Drive Sync
 
@@ -280,6 +362,7 @@ The shared service (`sync-run.service.ts`) provides:
 | `GET` | `/integrations/sync-runs/latest/:source` | Latest run for a source |
 | `GET` | `/integrations/sync-runs/:id` | Full run details |
 | `POST` | `/integrations/google-directory/cron` | Trigger Directory sync |
+| `POST` | `/integrations/google-groups/cron` | Trigger Groups sync. Fire-and-forget (202). Runs the full groups + members sync in the background. |
 | `POST` | `/integrations/google-drive/poll` | **Cloud Scheduler target** for Drive. Calls `changes.list`; only fires a full sync when in-scope changes exist. 200 / 202 / 503. |
 | `POST` | `/integrations/google-drive/run-full-sync` | Admin "Run sync now" + bootstrap path. Captures a fresh start page token at end of run so the next `/poll` has somewhere to start. Chunked for large folders. |
 | `POST` | `/integrations/google-drive/run-full-sync/continue` | Self-call continuation. Body `{ syncRunId }`. Resumes a paused sync from its checkpoint. |

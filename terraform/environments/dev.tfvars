@@ -17,11 +17,20 @@ backend_service_account = "sa-gcp-universal-backend-dev@os-test-491819.iam.gserv
 sync_schedules = {
   google_directory = {
     description = "Google Workspace directory → staff sync"
-    schedule    = "0 6 * * *"           # Daily at 6:00 AM
+    schedule    = "0 6 * * *"           # Daily at 6:00 AM ET
     time_zone   = "America/New_York"
     endpoint    = "/integrations/google-directory/cron"
     enabled     = true
     timeout     = "300s"
+  }
+
+  google_groups = {
+    description = "Google Workspace groups → teams + members sync"
+    schedule    = "30 6 * * *"          # Daily at 6:30 AM ET — 30 min after directory
+    time_zone   = "America/New_York"
+    endpoint    = "/integrations/google-groups/cron"
+    enabled     = true
+    timeout     = "600s"                # Longer: per-group members.list calls add up
   }
 
   # Uncomment as engines are built:

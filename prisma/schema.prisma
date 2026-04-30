@@ -90,10 +90,29 @@ model Team {
   createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz
   updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz
 
-  members TeamMember[]
-  changes TeamChange[]
+  members     TeamMember[]
+  changes     TeamChange[]
+  externalIds TeamExternalId[]
 
   @@map("teams")
+}
+
+// Stable mapping from external systems (Google Groups today, others later)
+// to team.id. Mirrors staff_external_ids — a Google Group's id is stable
+// across renames, so this is what the Groups sync uses to match an upstream
+// group to the existing team row even if the name changes.
+model TeamExternalId {
+  id         String   @id @default(uuid()) @db.Uuid
+  teamId     String   @map("team_id") @db.Uuid
+  system     String // 'google_groups' | future systems
+  externalId String   @map("external_id")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  @@unique([system, externalId])
+  @@index([teamId])
+  @@map("team_external_ids")
 }
 
 model TeamChange {
@@ -114,17 +133,38 @@ model TeamChange {
   @@map("team_changes")
 }
 
+// TeamMember supports two row shapes:
+//   - Linked: staff_id set, source_email may or may not be set. Normal case.
+//   - Unlinked: staff_id NULL, source_email REQUIRED. Created by the Groups
+//     sync when a member email doesn't match any existing staff record.
+//     The admin UI surfaces these so an operator can either provision the
+//     missing staff record (and the next sync will resolve them) or delete
+//     the unlinked row.
+//
+// `source` distinguishes 'manual' (admin UI) from 'google_groups_sync'.
+// The Groups sync only deletes rows it created — manual rows are preserved
+// even if the corresponding member isn't in the Google Group. Mirrors the
+// "managed set" pattern from the Directory sync's metadata logic.
+//
+// Uniqueness: enforced via partial indexes (see migration), not @@unique:
+//   - One linked row per (team_id, staff_id)   when staff_id IS NOT NULL
+//   - One unlinked row per (team_id, source_email) when staff_id IS NULL
+// Prisma's schema language can't express partial unique indexes, so the
+// indexes live in the migration SQL only. The model below documents them.
 model TeamMember {
-  id      String   @id @default(uuid()) @db.Uuid
-  teamId  String   @map("team_id") @db.Uuid
-  staffId String   @map("staff_id") @db.Uuid
-  addedAt DateTime @default(now()) @map("added_at") @db.Timestamptz
+  id          String   @id @default(uuid()) @db.Uuid
+  teamId      String   @map("team_id") @db.Uuid
+  staffId     String?  @map("staff_id") @db.Uuid
+  sourceEmail String?  @map("source_email")
+  unlinked    Boolean  @default(false)
+  source      String   @default("manual") // 'manual' | 'google_groups_sync'
+  addedAt     DateTime @default(now()) @map("added_at") @db.Timestamptz
 
-  team  Team  @relation(fields: [teamId], references: [id], onDelete: Cascade)
-  staff Staff @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  team  Team   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  staff Staff? @relation(fields: [staffId], references: [id], onDelete: Cascade)
 
-  @@unique([teamId, staffId])
   @@index([staffId])
+  @@index([teamId, unlinked])
   @@map("team_members")
 }
 

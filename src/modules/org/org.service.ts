@@ -277,14 +277,17 @@ export async function listStaff(
     }
 
     if (grant.resourceType === 'staff_team') {
+      // staffId is nullable on team_members (unlinked rows from the
+      // Groups sync have staffId=null + sourceEmail set). Filter to
+      // linked rows only — unlinked members don't grant org-data access.
       const members = await prisma.teamMember.findMany({
-        where: { teamId: grant.resourceId },
+        where: { teamId: grant.resourceId, staffId: { not: null } },
         select: { staffId: true },
       });
       // For team grants respect activeOnly by filtering after gathering IDs
       const teamStaff = await prisma.staff.findMany({
         where: {
-          id: { in: members.map((m) => m.staffId) },
+          id: { in: members.map((m) => m.staffId).filter((id): id is string => id !== null) },
           ...(activeOnly ? { status: { in: CURRENT_STATUSES } } : {}),
         },
         select: { id: true },
@@ -1028,9 +1031,12 @@ function teamToResponse(t: {
   startedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
+  // staffId nullable + staff nullable on the schema — but the callers
+  // include with `where: { staffId: { not: null } }`, so unlinked rows
+  // never reach this function. We narrow defensively below.
   members: Array<{
-    staffId: string;
-    staff: { id: string; fullName: string; email: string; title: string | null };
+    staffId: string | null;
+    staff: { id: string; fullName: string; email: string; title: string | null } | null;
   }>;
   changes: Array<{
     property: string;
@@ -1045,12 +1051,14 @@ function teamToResponse(t: {
     description: t.description,
     isActive: t.isActive,
     startedAt: t.startedAt,
-    members: t.members.map((m) => ({
-      staffId: m.staff.id,
-      fullName: m.staff.fullName,
-      email: m.staff.email,
-      title: m.staff.title,
-    })),
+    members: t.members
+      .filter((m): m is typeof m & { staff: NonNullable<typeof m.staff> } => m.staff !== null)
+      .map((m) => ({
+        staffId: m.staff.id,
+        fullName: m.staff.fullName,
+        email: m.staff.email,
+        title: m.staff.title,
+      })),
     currentState: resolveSimpleCurrentState(t.changes),
     createdAt: t.createdAt,
     updatedAt: t.updatedAt,
@@ -1119,7 +1127,11 @@ export async function listTeams(
     where,
     orderBy: { name: 'asc' },
     include: {
+      // Filter out unlinked members (sourced from the Groups sync, no
+      // matching staff record yet). The org-data API surface only exposes
+      // linked memberships; unlinked rows are an admin-UI-only concept.
       members: {
+        where: { staffId: { not: null } },
         include: {
           staff: { select: { id: true, fullName: true, email: true, title: true } },
         },
@@ -1138,7 +1150,11 @@ export async function getTeam(
   const team = await prisma.team.findUnique({
     where: { id },
     include: {
+      // Filter out unlinked members (sourced from the Groups sync, no
+      // matching staff record yet). The org-data API surface only exposes
+      // linked memberships; unlinked rows are an admin-UI-only concept.
       members: {
+        where: { staffId: { not: null } },
         include: {
           staff: { select: { id: true, fullName: true, email: true, title: true } },
         },

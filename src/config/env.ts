@@ -59,6 +59,21 @@ const EnvSchema = z.object({
   // Email of a domain user to impersonate (any user — directory is visible to all members).
   GOOGLE_DIRECTORY_IMPERSONATE_EMAIL: z.string().email().optional(),
 
+  // ── Google Groups → teams sync ──────────────────────────────────────────────
+  // Reuses the Directory SA (GOOGLE_DIRECTORY_SA_KEY_*) and impersonation
+  // user (GOOGLE_DIRECTORY_IMPERSONATE_EMAIL). The DWD client just needs
+  // the additional scopes admin.directory.group.readonly +
+  // admin.directory.group.member.readonly granted in Workspace Admin.
+  //
+  // Domain whose groups to enumerate (e.g. "anomaly.com"). Required when
+  // the sync actually runs; optional at boot so the backend can start
+  // even before IT has finished the DWD piece.
+  GOOGLE_GROUPS_DOMAIN: z.string().optional(),
+  // Pacing between per-group calls (each iteration calls members.list).
+  // Admin SDK has rate limits; default 1s gives ~3,600 groups/hr headroom
+  // which is plenty for any realistic Workspace size.
+  GOOGLE_GROUPS_DELAY_BETWEEN_GROUPS_MS: z.string().default('1000').transform(Number),
+
   // ── Workfront integration ───────────────────────────────────────────────────
   // Workfront proxies Maconomy for accounts and campaigns.
   WORKFRONT_BASE_URL: z.string().url().optional(),

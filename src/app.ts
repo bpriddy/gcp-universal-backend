@@ -12,6 +12,7 @@ import authRouter from './modules/auth/auth.router';
 import healthRouter from './modules/health/health.router';
 import orgRouter from './modules/org/org.router';
 import directoryRouter from './modules/integrations/google-directory/directory.router';
+import groupsRouter from './modules/integrations/google-groups/groups.router';
 import workfrontRouter from './modules/integrations/workfront/workfront.router';
 import driveRouter from './modules/integrations/google-drive/drive.router';
 import metadataImportRouter from './modules/integrations/staff-metadata-import/metadata-import.router';
@@ -84,6 +85,7 @@ export function createApp(): express.Application {
   app.use('/auth', authLimiter, authRouter);
   app.use('/org', orgRouter);
   app.use('/integrations/google-directory', directoryRouter);
+  app.use('/integrations/google-groups', groupsRouter);
   app.use('/integrations/workfront', workfrontRouter);
   app.use('/integrations/google-drive', driveRouter);
   app.use('/integrations/staff-metadata', metadataImportRouter);

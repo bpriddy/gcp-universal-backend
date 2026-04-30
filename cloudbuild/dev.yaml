@@ -39,6 +39,11 @@ substitutions:
   # decodes it at boot. Impersonation uses domain-wide delegation.
   _GOOGLE_DIRECTORY_IMPERSONATE_EMAIL: support@anomaly.com
   _GOOGLE_DIRECTORY_SA_SECRET: dev-google-directory-sa-key-b64
+  # Google Groups sync — reuses the Directory SA + impersonation user.
+  # Requires the DWD client to have admin.directory.group.readonly +
+  # admin.directory.group.member.readonly scopes added (out-of-band by
+  # Workspace admin; piggy-backing the contacts workstream).
+  _GOOGLE_GROUPS_DOMAIN: anomaly.com
   # Gemini API key for the staff classifier + Drive extraction prompts.
   # Without this, GeminiLlmDriver falls back to MockLlmDriver which returns
   # empty responses → every batch greedy-keeps, defeating the classifier.
@@ -159,7 +164,7 @@ steps:
       # SELF_BASE_URL = JWT_ISSUER for now (both are this service's public
       # Cloud Run URL). The Drive runner self-POSTs to this URL when a
       # chunked sync needs continuation. See README "Drive sync — Chunking".
-      - --set-env-vars=^||^NODE_ENV=development||GCP_PROJECT_ID=$PROJECT_ID||JWT_ISSUER=$_JWT_ISSUER||JWT_AUDIENCE=$_JWT_AUDIENCE||SELF_BASE_URL=$_JWT_ISSUER||GUB_ADMIN_BASE_URL=$_GUB_ADMIN_BASE_URL||GUB_REVIEW_BASE_URL=$_GUB_REVIEW_BASE_URL||GOOGLE_ALLOWED_AUDIENCES=$_GOOGLE_ALLOWED_AUDIENCES||CORS_ALLOWED_ORIGINS=$_CORS_ALLOWED_ORIGINS||GOOGLE_DIRECTORY_IMPERSONATE_EMAIL=$_GOOGLE_DIRECTORY_IMPERSONATE_EMAIL
+      - --set-env-vars=^||^NODE_ENV=development||GCP_PROJECT_ID=$PROJECT_ID||JWT_ISSUER=$_JWT_ISSUER||JWT_AUDIENCE=$_JWT_AUDIENCE||SELF_BASE_URL=$_JWT_ISSUER||GUB_ADMIN_BASE_URL=$_GUB_ADMIN_BASE_URL||GUB_REVIEW_BASE_URL=$_GUB_REVIEW_BASE_URL||GOOGLE_ALLOWED_AUDIENCES=$_GOOGLE_ALLOWED_AUDIENCES||CORS_ALLOWED_ORIGINS=$_CORS_ALLOWED_ORIGINS||GOOGLE_DIRECTORY_IMPERSONATE_EMAIL=$_GOOGLE_DIRECTORY_IMPERSONATE_EMAIL||GOOGLE_GROUPS_DOMAIN=$_GOOGLE_GROUPS_DOMAIN
       - --set-secrets=DATABASE_URL=$_DB_SECRET:latest,APP_DB_CONNECTIONS=$_APP_DB_SECRET:latest,GOOGLE_CLIENT_ID=$_GOOGLE_CLIENT_ID_SECRET:latest,JWT_PRIVATE_KEY_B64=$_JWT_PRIV_SECRET:latest,JWT_PUBLIC_KEY_B64=$_JWT_PUB_SECRET:latest,GOOGLE_DIRECTORY_SA_KEY_B64=$_GOOGLE_DIRECTORY_SA_SECRET:latest,GEMINI_API_KEY=$_GEMINI_SECRET:latest
       - --set-cloudsql-instances=$PROJECT_ID:$_REGION:$_CLOUDSQL_INSTANCE
     waitFor: [migrate]

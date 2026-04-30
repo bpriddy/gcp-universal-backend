@@ -8,6 +8,43 @@ remaining exposures) lives in internal notes instead of this public log.
 
 ## [Unreleased]
 
+### Google Groups → teams sync (2026-04-30)
+
+- New module `src/modules/integrations/google-groups/` mirrors the
+  Directory sync shape: `groups.client.ts` (Admin SDK Directory API,
+  reuses Directory SA + DWD), `groups.sync.ts` (per-group upsert + diff
+  + member resolution), `groups.cron.ts` (orchestrator), `groups.router.ts`
+  (POST /cron, fire-and-forget 202).
+- Each Workspace group becomes a team. Greedy ingest — no name/size
+  filtering. If a group shouldn't be a team, admin flips `isActive=false`
+  on the team manually.
+- Members are resolved to staff by email. Unresolved members get
+  **unlinked rows** (`staff_id=NULL`, `source_email=<email>`,
+  `unlinked=true`) so the admin UI can surface them for manual fix —
+  the operator either provisions the missing staff record (next sync
+  resolves them) or deletes the unlinked row.
+- New `team_external_ids` table mirrors `staff_external_ids`: stable
+  Google Group ID → team.id mapping, survives renames.
+- `team_members` evolved: `staff_id` nullable, new
+  `source_email` / `unlinked` / `source` columns, partial unique
+  indexes for linked vs unlinked rows, CHECK constraint that an
+  unlinked row must have a `source_email`.
+- "Managed set" deletion: sync only removes rows where
+  `source='google_groups_sync'`. Manually-added members
+  (`source='manual'`) are preserved unconditionally.
+- New env vars: `GOOGLE_GROUPS_DOMAIN`,
+  `GOOGLE_GROUPS_DELAY_BETWEEN_GROUPS_MS`. SA + impersonation user
+  reused from the Directory sync.
+- Cloud Scheduler: new `sync-google_groups-dev` job, daily 06:30 ET
+  (30 min after Directory) — added via the existing `sync_schedules`
+  Terraform map, no new resource files.
+- README + docs/DATA-SYNC.md updated with the full pipeline,
+  schema, env vars, and DWD scope requirements.
+- One out-of-band IT action required before the sync produces real
+  data: Workspace admin must add `admin.directory.group.readonly` +
+  `admin.directory.group.member.readonly` scopes to the existing DWD
+  client (piggy-backing the contacts workstream — no separate IT ask).
+
 ### Drive sync infra (2026-04-29)
 
 - New `terraform/drive_poll.tf` adds the GCP-side wiring for the Drive
