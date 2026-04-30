@@ -8,6 +8,36 @@ remaining exposures) lives in internal notes instead of this public log.
 
 ## [Unreleased]
 
+### CORS rejection — informative 403 instead of opaque preflight block (2026-04-30)
+
+Implementer feedback: a fresh consuming-app origin not in the allow-list
+got an opaque "blocked by CORS policy" browser error. The dev had no way
+to know which step they'd missed. The strict allow-list itself is fine —
+the failure mode wasn't.
+
+- `src/config/cors.ts`: CORS layer now reflects any origin (origin: true)
+  with credentials. The cors lib stops being the gatekeeper.
+- `src/middleware/originAllowList.ts` (new): mounted after the CORS
+  middleware. Strict equality match against `CORS_ALLOWED_ORIGINS` — no
+  wildcards. On a non-allow-listed origin, returns a structured 403 with
+  the rejected origin, the file/key to edit (`cloudbuild/<env>.yaml` →
+  `_CORS_ALLOWED_ORIGINS`), and the action to take. The browser CAN read
+  this body because CORS already attached the Access-Control-Allow-Origin
+  header.
+- Bypass list for public-by-design endpoints: `/.well-known/jwks.json`,
+  `/.well-known/oauth-authorization-server`, `/health`, `/health/live`.
+  Reachable from any origin so SDK verifiers + load balancers aren't
+  blocked.
+- `cloudbuild/dev.yaml` — added the implementer's current Replit dev URL
+  to the explicit allow-list (immediate unblock). The list grows
+  per-consumer; the friendly 403 makes that obvious from the browser
+  console.
+
+Trade-off this design picks: keep the allow-list as a real check (no
+wildcard widening), accept the per-new-origin redeploy as the cost of an
+explicit registration step, and make the failure mode helpful enough
+that devs don't bounce off it.
+
 ### Drive sync infra (2026-04-29)
 
 - New `terraform/drive_poll.tf` adds the GCP-side wiring for the Drive
