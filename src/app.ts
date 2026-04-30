@@ -7,6 +7,7 @@ import { config } from './config/env';
 import { generalLimiter } from './middleware/rateLimiter';
 import { errorHandler } from './middleware/errorHandler';
 import { authLimiter } from './middleware/rateLimiter';
+import { originAllowList } from './middleware/originAllowList';
 import { logger } from './services/logger';
 import authRouter from './modules/auth/auth.router';
 import healthRouter from './modules/health/health.router';
@@ -42,7 +43,12 @@ export function createApp(): express.Application {
   );
 
   // ── CORS ──────────────────────────────────────────────────────────────────
+  // CORS reflects any origin so the browser can read response bodies.
+  // The actual origin allow-list enforcement happens in the next
+  // middleware (originAllowList) — that way an unknown origin gets a
+  // readable 403 with guidance, not an opaque "blocked by CORS policy".
   app.use(cors(corsOptions));
+  app.use(originAllowList);
 
   // ── Structured request logging ────────────────────────────────────────────
   app.use(

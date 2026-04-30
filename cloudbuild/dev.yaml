@@ -33,7 +33,12 @@ substitutions:
   # Comma-separated lists. ^||^ delimiter is used on the --set-env-vars line
   # so commas here don't collide with --set-env-vars' own comma separator.
   _GOOGLE_ALLOWED_AUDIENCES: "843516467880-hddb27gje6o8p1avb2hqrjj5epmeif16.apps.googleusercontent.com"
-  _CORS_ALLOWED_ORIGINS: "https://d87ae7f0-70ba-4579-b44b-761cd572dda4-00-362241jmj0fns.riker.replit.dev,http://localhost:5173,http://localhost:3000"
+  # Comma-separated, exact-match. New consumer? Append the origin here
+  # and push to the dev branch to trigger a redeploy. Unknown origins
+  # get a structured 403 from the originAllowList middleware naming
+  # exactly this file + key (devs see it in their browser, not an
+  # opaque CORS error).
+  _CORS_ALLOWED_ORIGINS: "https://d87ae7f0-70ba-4579-b44b-761cd572dda4-00-362241jmj0fns.riker.replit.dev,https://fcbe1f1a-8730-4a88-969c-15fcf173fde6-00-118j2bu44tt6p.kirk.replit.dev,http://localhost:5173,http://localhost:3000"
   # Google Workspace Directory sync — impersonation target + SA key secret.
   # The SA key (JSON) is base64-encoded and stored in Secret Manager; GUB
   # decodes it at boot. Impersonation uses domain-wide delegation.
