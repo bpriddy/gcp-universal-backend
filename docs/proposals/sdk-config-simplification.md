@@ -109,13 +109,11 @@ Net security-positive: prevents per-environment drift (dev's `app_id` accidental
 
 *Mitigation:* keep the helper minimal — URL validation, env-prefix resolution, discovery fetch + validate. No clever logic. Test exhaustively. Pin SDK version per consuming app.
 
-**5. Removing `GUB_AUDIENCE` shifts the audience check from explicit-arg to auto-derived.**
+**5. Removing `GUB_AUDIENCE` shifts the audience check from explicit-arg to auto-derived.** ✅ **DECIDED — see Decisions log.**
 
 Today: implementer's backend calls `verify({ audience: process.env.GUB_AUDIENCE })`. Two values that have to match.
 
-Tomorrow: SDK auto-verifies `aud === GUB.appId`. One value, declared once, verified inside the SDK.
-
-This is **net more secure** — fewer typo paths, harder to forget passing `audience`. But it shifts responsibility from "implementer types the right value" to "SDK applies the right check." If you'd rather preserve the explicitness, we keep `audience` as a required arg to `verifyGUBToken({ audience })` and just stop env-varring it.
+Tomorrow: SDK auto-verifies `aud === GUB.appId`. One value, declared once, verified inside the SDK. The `verifyGUBToken` signature is exactly `verifyGUBToken(token: string): Promise<VerifiedClaims>` — **no `audience` parameter, no `skipAudienceCheck` flag, no "trusted audiences" array.** If a real cross-app verification need ever surfaces, it gets designed as a token-exchange endpoint at GUB (where audit + access controls live), not a runtime SDK escape hatch.
 
 ## Migration plan
 
@@ -148,4 +146,10 @@ Three phases, each independently shippable:
 2. Decide between fail-closed and fail-open at SDK startup if discovery can't be fetched.
 3. Decide on the caching strategy.
 4. Confirm `app_id`-as-code-constant is acceptable (identity, not credential).
-5. Confirm SDK auto-verifying `aud === appId` is acceptable in place of implementer-typed `GUB_AUDIENCE`.
+5. ~~Confirm SDK auto-verifying `aud === appId` is acceptable in place of implementer-typed `GUB_AUDIENCE`.~~ ✅ **Decided — see Decisions log.**
+
+## Decisions log
+
+| Date | Topic | Decision | Source |
+|---|---|---|---|
+| 2026-05-01 | Audience verification API | `verifyGUBToken(token)` is the entire signature. Audience verification is baked in against `GUB.appId`. **No `audience` parameter, no `skipAudienceCheck` flag, no "trusted audiences" array.** Future cross-app verification needs get designed as a GUB-side token-exchange endpoint, not a runtime SDK escape hatch. | Security team recommendation |
