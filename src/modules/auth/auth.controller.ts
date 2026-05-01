@@ -19,11 +19,17 @@ export async function googleLogin(
   next: NextFunction,
 ): Promise<void> {
   try {
+    // The browser-set Origin header is what the strict same-row
+    // pairing check binds against. For non-browser callers (curl, etc.)
+    // origin will be undefined and pairing is skipped — but those
+    // callers also don't go through this endpoint in the SDK flow.
+    const origin = typeof req.headers.origin === 'string' ? req.headers.origin : undefined;
     const result = await authService.googleLogin(
       req.body.idToken,
       getClientIp(req),
       getUserAgent(req),
       req.body.appId,
+      origin,
     );
     // pending_approval is a 202 — authenticated but not yet authorized for this app
     const status = 'status' in result && result.status === 'pending_approval' ? 202 : 200;

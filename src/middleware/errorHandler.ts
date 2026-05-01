@@ -29,7 +29,21 @@ export function errorHandler(
   }
 
   if (err instanceof GoogleAuthError) {
-    res.status(401).json({ code: err.code, message: err.message } satisfies ApiError);
+    // 401 for "your token is bad" (re-auth would help).
+    // 403 for "your app/token isn't authorized" (re-auth WON'T help; an
+    // operator needs to register the app first). Implementers see this
+    // message verbatim, so the body carries actionable text.
+    const status =
+      err.code === 'AUDIENCE_NOT_REGISTERED' ||
+      err.code === 'AUDIENCE_ORIGIN_MISMATCH' ||
+      err.code === 'AUDIENCES_REGISTRY_EMPTY'
+        ? 403
+        : 401;
+    res.status(status).json({
+      code: err.code,
+      message: err.message,
+      ...(err.details ? { details: err.details } : {}),
+    } satisfies ApiError & { details?: unknown });
     return;
   }
 

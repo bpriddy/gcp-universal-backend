@@ -163,7 +163,7 @@ model Staff {
   driveProposalReviews   DriveChangeProposal[] @relation("DriveProposalReviewerStaff")
   driveProposalDecisions DriveChangeProposal[] @relation("DriveProposalDecidedByStaff")
   promptPresetEdits      PromptPreset[]        @relation("PromptPresetUpdatedByStaff")
-  corsOriginsAdded       CorsAllowedOrigin[]   @relation("CorsOriginAddedByStaff")
+  trustedAppsAdded       TrustedApp[]          @relation("TrustedAppAddedByStaff")
 
   @@index([userId])
   @@index([officeId])
@@ -562,43 +562,58 @@ model OAuthAuthCode {
   @@map("oauth_auth_codes")
 }
 
-// ── CORS allow-list (dev/staging tooling) ───────────────────────────────────
-// The runtime-mutable allow-list of origins that may make cross-origin
-// requests against this GUB instance. Managed via gub-admin's UI.
+// ── Trusted Apps registry (dev/staging tooling) ────────────────────────────
+// One row per consuming app that GUB trusts. Each row holds the
+// identifiers the app uses at the layers GUB enforces:
+//   - origins:           which browser origins may make cross-origin
+//                        requests (CORS gate, originAllowList middleware).
+//   - googleClientIds:   which Google OAuth client_ids the app signs users
+//                        in with — GUB will trust ID tokens whose `aud`
+//                        is on this list when verifyGoogleToken runs.
 //
-// SCOPE: This is dev/staging tooling, not production hardening. Production
-// CORS should be handled at the edge (WAF, Cloud Armor, load balancer);
-// the originAllowList middleware reading this table is a
-// faster-iteration replacement for the previous static env-var allow-list.
-// See README "CORS allow-list — dev/staging tooling" for the layer split.
+// Strict same-row pairing at /auth/google/exchange: the request's Origin
+// header AND the token's `aud` must appear on the SAME row. A fork of a
+// registered app does NOT inherit the parent app's trust — its origin
+// won't be on the parent row, and its client_id won't either, so an
+// operator has to register the fork explicitly.
 //
-// Reads happen on every request that has an Origin header (except
-// public-by-design bypass paths). Single-row index lookup; no caching
-// today. If profiling ever shows it matters, in-memory cache with TTL is
-// the natural addition.
+// SCOPE: dev/staging tooling, same shape as the previous CORS allow-list.
+// Production trust decisions belong at the edge (WAF / Cloud Armor) and
+// at upstream OAuth client registration; this table is the runtime-
+// mutable middle layer for fast iteration.
+//
+// Reads happen on every request that has an Origin header (CORS gate)
+// and on every /auth/google/exchange call (audience gate). GIN indexes
+// on the array columns keep both lookups sub-ms; no caching today.
 
-model CorsAllowedOrigin {
-  id        String   @id @default(uuid()) @db.Uuid
-  origin    String   @unique
-  // Human-readable note: what app / which dev / why. Surfaced in the
-  // admin UI list view so future operators understand who an entry was
-  // for (and whether it's still in use).
-  label     String?
+model TrustedApp {
+  id              String   @id @default(uuid()) @db.Uuid
+  // Human-readable name. Shown in the admin UI list — e.g. "work-flows
+  // Replit fork — Alice", "gub-review (public)", "Local dev (Vite)".
+  name            String
+  // Origins this app may use for cross-origin requests (CORS gate).
+  // Stored as canonical origin strings (protocol + host + port).
+  origins         String[]
+  // Google OAuth client_ids this app's frontend signs users in with.
+  // GUB will accept ID tokens whose `aud` matches one of these — and
+  // only when the request's Origin header is also on `origins` for
+  // THIS row (strict pairing, see verifyGoogleToken).
+  googleClientIds String[] @map("google_client_ids")
   // isActive=false is a soft-disable. Keeps the audit history while
-  // taking the origin out of circulation. Hard delete is also supported
+  // taking the app out of circulation. Hard delete is also supported
   // by the admin UI for clear-out cases.
-  isActive  Boolean  @default(true) @map("is_active")
+  isActive        Boolean  @default(true) @map("is_active")
   // Staff.id of the operator who created this entry. Resolved from the
   // IAP identity by requireActor (Item 4 actor pattern). NULL only for
   // rows seeded by migration before the actor framework existed.
-  addedBy   String?  @map("added_by") @db.Uuid
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+  addedBy         String?  @map("added_by") @db.Uuid
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz
 
-  addedByStaff Staff? @relation("CorsOriginAddedByStaff", fields: [addedBy], references: [id])
+  addedByStaff Staff? @relation("TrustedAppAddedByStaff", fields: [addedBy], references: [id])
 
-  @@index([origin, isActive])
-  @@map("cors_allowed_origins")
+  @@index([isActive])
+  @@map("trusted_apps")
 }
 
 model StaffMetadata {

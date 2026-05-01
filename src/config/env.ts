@@ -23,6 +23,12 @@ const EnvSchema = z.object({
   APP_DB_CONNECTIONS: AppDbConnectionsSchema,
 
   GOOGLE_CLIENT_ID: z.string().min(1, 'GOOGLE_CLIENT_ID is required'),
+  // DEPRECATED — the audience allow-list moved to the trusted_apps DB
+  // table (see migration 20260430040000_trusted_apps_registry and
+  // services/google.service.ts). The env var is no longer read by the
+  // running app; kept in the schema only so any leftover references
+  // don't crash boot. Can be removed entirely in a future cleanup PR
+  // once we're confident nothing in the deploy pipeline still sets it.
   GOOGLE_ALLOWED_AUDIENCES: z
     .string()
     .default('')
@@ -218,7 +224,11 @@ function buildConfig() {
     'JWT public',
   );
 
-  // Ensure the client ID is always in the allowed audiences list
+  // GOOGLE_ALLOWED_AUDIENCES is deprecated (see schema comment). The
+  // audience allow-list now lives in trusted_apps. We keep the env-merge
+  // logic as a no-op so the resulting config object retains the same
+  // shape for any legacy reader, but verifyGoogleToken queries the DB
+  // directly and never reads this field.
   const allowedAudiences = Array.from(
     new Set([env.GOOGLE_CLIENT_ID, ...env.GOOGLE_ALLOWED_AUDIENCES]),
   );
