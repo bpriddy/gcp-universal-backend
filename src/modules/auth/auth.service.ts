@@ -26,9 +26,15 @@ export async function googleLogin(
   ipAddress: string | undefined,
   userAgent: string | undefined,
   appId?: string,
+  origin?: string,
 ): Promise<GoogleLoginResult> {
-  // 1. Verify token with Google — throws GoogleAuthError if invalid
-  const googlePayload = await verifyGoogleToken(idToken);
+  // 1. Verify token with Google — throws GoogleAuthError if invalid.
+  //    Passing origin opts into strict same-row pairing (origin + token
+  //    aud must both appear on the SAME trusted_apps row). For browser
+  //    SDK flows this is always set; for server-to-server callers
+  //    (broker) the controller calls verifyGoogleToken directly without
+  //    an origin so pairing is skipped.
+  const googlePayload = await verifyGoogleToken(idToken, { origin });
 
   // 2. Resolve user identity (googleSub → email stub → JIT provision)
   const user = await findOrCreateUser(googlePayload);
@@ -149,11 +155,14 @@ export async function exchangeGoogleAccessToken(
     }
     userInfo = await response.json() as typeof userInfo;
   } catch {
-    throw new GoogleAuthError('Invalid or expired Google access token');
+    throw new GoogleAuthError('INVALID_GOOGLE_TOKEN', 'Invalid or expired Google access token');
   }
 
   if (!userInfo.sub || !userInfo.email) {
-    throw new GoogleAuthError('Google userinfo response missing required claims (sub, email)');
+    throw new GoogleAuthError(
+      'INVALID_GOOGLE_TOKEN',
+      'Google userinfo response missing required claims (sub, email)',
+    );
   }
 
   // Construct a minimal TokenPayload-compatible object so we can reuse findOrCreateUser.

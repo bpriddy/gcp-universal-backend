@@ -619,77 +619,95 @@ callers spend Gemini credits.
 
 ---
 
-## CORS allow-list — dev/staging tooling
+## Trusted apps registry — dev/staging tooling
 
 > **⚠ Status (2026-04-30):** **No production environment, prod deploy
 > pipeline, or CI/CD strategy has been planned in detail yet.**
-> Everything labeled "prod" or "edge CORS" below is forward-looking
-> design intent — describing what *should* happen when the prod
-> environment, edge security mechanism, and deploy pipeline are
-> eventually built. Today, the dev/staging system described in this
-> section is the entire CORS protection that exists. The "two-layer"
-> framing is a design contract that captures intent, not current
-> implementation. When prod arrives, the choices around edge
-> mechanism (Cloud Armor / LB / WAF), promotion flow, and CI/CD
-> tooling all get made then — none of it is fixed today.
+> Everything labeled "prod" or "edge" below is forward-looking design
+> intent — describing what *should* happen when the prod environment,
+> edge security mechanism, and deploy pipeline are eventually built.
+> Today, the dev/staging system described in this section is the entire
+> trust enforcement that exists. The "two-layer" framing is a design
+> contract that captures intent, not current implementation.
 
-CORS protection in this system is **two-layer by design**, with each layer
-intended for a different operational reality:
+GUB enforces a trust decision on every browser-initiated request: "is
+this consuming app one we've registered?" That decision has two halves
+at two different layers, and both halves now live on a single per-app
+row in the `trusted_apps` table:
+
+| Identifier | Layer it gates |
+|---|---|
+| `origins[]` (e.g. `https://app.example.com`) | CORS — the `originAllowList` middleware. Coarse "is this origin on ANY active row?" check. |
+| `googleClientIds[]` (e.g. `12345-abc.apps.googleusercontent.com`) | Token verification — `verifyGoogleToken` at `/auth/google/exchange`. The token's `aud` claim must be on some active row. |
+
+### Strict same-row pairing
+
+When the SDK posts a Google ID token to `/auth/google/exchange`, the
+verifier requires BOTH the request's Origin header AND the token's `aud`
+claim to appear on the **same** trusted_apps row. A fork or derivative
+environment doesn't inherit the parent app's trust — its origin and
+client_id won't match the parent's row, and an admin has to register
+the fork explicitly.
+
+This is intentional friction: it stops e.g. someone forking a Replit
+project and unintentionally riding on the parent project's GUB trust.
+The cost is one registration per fork; the benefit is that "registered
+once" never silently means "registered for all derivatives."
+
+### Two-layer architecture
 
 | Layer | Where | What it does | When it's the primary boundary |
 |---|---|---|---|
-| **App-layer middleware** | `src/middleware/originAllowList.ts`, backed by the `cors_allowed_origins` DB table | Reads the runtime-mutable allow-list, returns a structured 403 with actionable guidance for unknown origins | Dev + staging |
-| **Edge CORS** | WAF / Cloud Armor / load balancer (NOT YET STOOD UP) | Blocks unknown origins before they reach the app | Production |
+| **App-layer enforcement** | `originAllowList` middleware + `verifyGoogleToken`, both reading the `trusted_apps` table | Coarse origin gate at the edge of the app + strict same-row pairing at token verification | Dev + staging |
+| **Edge** | WAF / Cloud Armor / LB + upstream OAuth client registration (NOT YET STOOD UP) | Blocks unknown origins and locks down the OAuth client list before traffic reaches the app | Production |
 
-In dev/staging today, the app-layer middleware IS the protection. In
+In dev/staging today, the app-layer enforcement IS the protection. In
 production, the edge will be the actual security boundary; the
-middleware will stay mounted as defense-in-depth (cheap; redundant).
-The two layers don't replace each other — they cover different
-operational realities.
+middleware + verifier will stay as defense-in-depth.
 
-### Dev/staging — runtime-mutable allow-list
+### Runtime-mutable registry
 
-The `cors_allowed_origins` table is the source of truth. Each row:
-`(id, origin, label, isActive, addedBy, createdAt, updatedAt)`. The
-`originAllowList` middleware queries on every request that has an
-`Origin` header (except public-by-design bypass paths: `/.well-known/*`
-and `/health`).
+The `trusted_apps` table is the source of truth. Each row:
+`(id, name, origins, googleClientIds, isActive, addedBy, createdAt, updatedAt)`.
 
-Adding an origin:
-1. A dev hits the wall — request blocked, browser console shows a
-   structured 403 with the rejected origin.
-2. Dev sends the origin to a GUB admin.
-3. Admin opens **gub-admin → Settings → CORS allow-list**, pastes the
-   origin, gives it a label, saves.
+- `originAllowList` middleware queries on every request with an Origin
+  header (except public-by-design bypass paths: `/.well-known/*` and
+  `/health`).
+- `verifyGoogleToken` queries on every `/auth/google/exchange` call —
+  pulls the union of all active `googleClientIds` for cryptographic
+  verification, then checks same-row pairing against the request's
+  Origin.
+
+Adding a consuming app:
+1. The implementer hits the wall — either CORS-blocked (origin not on
+   any row) or token-rejected (`AUDIENCE_NOT_REGISTERED` /
+   `AUDIENCE_ORIGIN_MISMATCH`). The browser sees a structured 403 with
+   actionable text.
+2. Implementer sends their origin and Google client_id to a GUB admin.
+3. Admin opens **gub-admin → Settings → Trusted apps**, registers the
+   app (or edits an existing entry), saves.
 4. Change is live on the next request — no redeploy.
 
-The audit log captures every add/remove via the Item 4 actor pattern.
+The audit log captures every add/remove/edit via the Item 4 actor
+pattern.
 
-### Production — edge CORS (planned, not built)
+### GUB self-trust (auto-seed)
 
-**No prod environment exists today.** The flow described here is forward
-planning — written down now so when the prod environment + pipeline get
-built, this is a fill-in-the-blanks task rather than a re-derivation:
+GUB's own Google client_id (loaded from the `dev-google-client-id`
+secret into the `GOOGLE_CLIENT_ID` env var) is auto-seeded onto a
+"GUB itself" trusted_apps row at every server boot
+(`ensureSelfTrustedApp` in `services/google.service.ts`). Without this,
+the OAuth broker's callback can't verify any token after the migration
+ran. The seed is idempotent — no-op if a row already covers the env's
+client_id.
 
-```
-Cloud Build (prod deploy) →
-  1. SELECT origin FROM cors_allowed_origins WHERE is_active = true
-  2. Transform to the edge CORS format (Cloud Armor policy / LB
-     allow-list / whatever edge mechanism is chosen)
-  3. Apply edge config update
-  4. Continue with Cloud Run revision deploy
-```
+### Production — edge enforcement (planned, not built)
 
-The middleware stays mounted in prod as defense-in-depth — redundant
-once the edge is filtering, but cheap. The edge is the security
-boundary; the middleware is the safety net.
-
-**None of the above exists in code or infra today.** No prod project,
-no edge mechanism chosen, no build step written. This whole subsection
-is a design contract for a future iteration. When prod stands up, the
-operator picks the edge mechanism (Cloud Armor / LB ACL / WAF / etc.),
-writes the build step, and updates this section to "current state" —
-with a Terraform module link or a runbook page replacing this prose.
+**No prod environment exists today.** When prod stands up, the operator
+picks the edge mechanism (Cloud Armor / LB ACL / WAF / etc.) and writes
+a deploy-time step that promotes `trusted_apps` rows into the edge's
+configuration format. The middleware + verifier stay mounted as
+defense-in-depth.
 
 ### Why we don't allow wildcards
 
@@ -743,7 +761,7 @@ across all credentials this service uses.
 | `JWT_AUDIENCE` | No | JWT `aud` claim (default: `https://api.example.com`) |
 | `JWT_ACCESS_TOKEN_TTL` | No | Access token lifetime in seconds (default: `900`) |
 | `JWT_REFRESH_TOKEN_TTL` | No | Refresh token lifetime in seconds (default: `2592000`) |
-| `GOOGLE_ALLOWED_AUDIENCES` | No | Comma-separated list of Google Client IDs GUB will accept on `/auth/google`. `GOOGLE_CLIENT_ID` is always included implicitly. |
+| `GOOGLE_ALLOWED_AUDIENCES` | **DEPRECATED** | No longer read. The audience allow-list moved to the `trusted_apps` DB table; manage via gub-admin → Settings → Trusted apps. The schema entry is kept only so leftover deploy configs don't crash boot. |
 | `CORS_ALLOWED_ORIGINS` | No | Comma-separated allowed origins |
 | `AUTH_RATE_LIMIT_MAX` | No | Max auth requests per window (default: `10`) |
 | `PORT` | No | Server port (default: `3000`) |

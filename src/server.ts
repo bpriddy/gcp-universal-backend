@@ -3,6 +3,7 @@ import { config } from './config/env';
 import { initializeAppDbPools, closeAllPools, prisma } from './config/database';
 import { logger } from './services/logger';
 import { checkImmutabilityTriggers } from './config/trigger-check';
+import { ensureSelfTrustedApp } from './services/google.service';
 
 async function connectWithRetry(retries = 5, delayMs = 2000): Promise<void> {
   for (let attempt = 1; attempt <= retries; attempt++) {
@@ -39,6 +40,11 @@ async function main(): Promise<void> {
     // Connect to DB after the server is listening (Cloud SQL socket needs a moment)
     connectWithRetry()
       .then(() => checkImmutabilityTriggers())
+      // Idempotent: ensures the env GOOGLE_CLIENT_ID is on at least one
+      // active trusted_apps row. Without this, post-migration the broker
+      // would have no valid audiences to verify against. Logged once on
+      // first boot after migration; no-op every other start.
+      .then(() => ensureSelfTrustedApp())
       .catch((err) => {
         const message = err instanceof Error ? err.message : String(err);
         const stack = err instanceof Error ? err.stack : undefined;

@@ -22,6 +22,9 @@ substitutions:
   _DB_SECRET: dev-database-url
   _APP_DB_SECRET: dev-app-db-connections
   _GOOGLE_CLIENT_ID_SECRET: dev-google-client-id
+  # GUB's own Google client_id is loaded from this secret. It's auto-
+  # seeded onto a "GUB itself" trusted_apps row at boot — no static
+  # _GOOGLE_ALLOWED_AUDIENCES substitution needed any more.
   _JWT_PRIV_SECRET: dev-jwt-private-key-b64
   _JWT_PUB_SECRET: dev-jwt-public-key-b64
   _CLOUDSQL_INSTANCE: gub-platform
@@ -30,19 +33,20 @@ substitutions:
   # Sibling service URLs used by outbound features (magic-link emails etc.)
   _GUB_ADMIN_BASE_URL: https://gub-admin-dev-843516467880.us-central1.run.app
   _GUB_REVIEW_BASE_URL: https://gub-review-dev-843516467880.us-central1.run.app
-  # Comma-separated lists. ^||^ delimiter is used on the --set-env-vars line
-  # so commas here don't collide with --set-env-vars' own comma separator.
-  _GOOGLE_ALLOWED_AUDIENCES: "843516467880-hddb27gje6o8p1avb2hqrjj5epmeif16.apps.googleusercontent.com"
-  # CORS_ALLOWED_ORIGINS is no longer set here — the allow-list is now
-  # in the cors_allowed_origins DB table, manageable at runtime via the
-  # gub-admin Settings UI without a redeploy. The migration that created
-  # the table (20260430010000_cors_allowed_origins) seeded it from the
-  # values that previously lived on this line. New origins get added via
-  # the admin UI; the change is live within the next request.
+  # GOOGLE_ALLOWED_AUDIENCES + CORS_ALLOWED_ORIGINS are no longer set
+  # here. Both allow-lists merged into the trusted_apps DB table
+  # (migration 20260430040000_trusted_apps_registry), one row per
+  # consuming app, manageable at runtime via gub-admin → Settings →
+  # Trusted apps. New origins / new Google client_ids get added via the
+  # admin UI; the change is live within the next request — no redeploy.
   #
-  # See README "CORS allow-list — dev/staging tooling" for the layer
-  # split (this DB-backed system vs the prod edge CORS that will land
-  # alongside the prod environment).
+  # The env GOOGLE_CLIENT_ID (loaded from Secret Manager below) is
+  # auto-seeded onto a "GUB itself" trusted_apps row at every server
+  # boot (ensureSelfTrustedApp) so the OAuth broker keeps working.
+  #
+  # See README "Trusted apps registry — dev/staging tooling" for the
+  # layer split (this DB-backed system vs the prod edge CORS + upstream
+  # OAuth client registration that will land alongside the prod env).
   # Google Workspace Directory sync — impersonation target + SA key secret.
   # The SA key (JSON) is base64-encoded and stored in Secret Manager; GUB
   # decodes it at boot. Impersonation uses domain-wide delegation.
@@ -168,7 +172,7 @@ steps:
       # SELF_BASE_URL = JWT_ISSUER for now (both are this service's public
       # Cloud Run URL). The Drive runner self-POSTs to this URL when a
       # chunked sync needs continuation. See README "Drive sync — Chunking".
-      - --set-env-vars=^||^NODE_ENV=development||GCP_PROJECT_ID=$PROJECT_ID||JWT_ISSUER=$_JWT_ISSUER||JWT_AUDIENCE=$_JWT_AUDIENCE||SELF_BASE_URL=$_JWT_ISSUER||GUB_ADMIN_BASE_URL=$_GUB_ADMIN_BASE_URL||GUB_REVIEW_BASE_URL=$_GUB_REVIEW_BASE_URL||GOOGLE_ALLOWED_AUDIENCES=$_GOOGLE_ALLOWED_AUDIENCES||GOOGLE_DIRECTORY_IMPERSONATE_EMAIL=$_GOOGLE_DIRECTORY_IMPERSONATE_EMAIL
+      - --set-env-vars=^||^NODE_ENV=development||GCP_PROJECT_ID=$PROJECT_ID||JWT_ISSUER=$_JWT_ISSUER||JWT_AUDIENCE=$_JWT_AUDIENCE||SELF_BASE_URL=$_JWT_ISSUER||GUB_ADMIN_BASE_URL=$_GUB_ADMIN_BASE_URL||GUB_REVIEW_BASE_URL=$_GUB_REVIEW_BASE_URL||GOOGLE_DIRECTORY_IMPERSONATE_EMAIL=$_GOOGLE_DIRECTORY_IMPERSONATE_EMAIL
       - --set-secrets=DATABASE_URL=$_DB_SECRET:latest,APP_DB_CONNECTIONS=$_APP_DB_SECRET:latest,GOOGLE_CLIENT_ID=$_GOOGLE_CLIENT_ID_SECRET:latest,JWT_PRIVATE_KEY_B64=$_JWT_PRIV_SECRET:latest,JWT_PUBLIC_KEY_B64=$_JWT_PUB_SECRET:latest,GOOGLE_DIRECTORY_SA_KEY_B64=$_GOOGLE_DIRECTORY_SA_SECRET:latest,GEMINI_API_KEY=$_GEMINI_SECRET:latest
       - --set-cloudsql-instances=$PROJECT_ID:$_REGION:$_CLOUDSQL_INSTANCE
     waitFor: [migrate]
