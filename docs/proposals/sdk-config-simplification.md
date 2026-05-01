@@ -1,6 +1,6 @@
 # GUB SDK Configuration Simplification — Proposal
 
-**Status:** Proposal, not yet implemented. Seeking security review before code changes.
+**Status:** Approved, ready for implementation. Security review complete (2026-05-01); decisions captured in the log at the bottom.
 **Scope:** SDK ergonomics for consuming apps. **No changes to the GUB trust model.**
 
 ## TL;DR
@@ -127,11 +127,28 @@ Three phases, each independently shippable:
 
 ## Open questions
 
-1. **Discovery doc validation rigor.** Beyond `issuer === GUB_URL`, what should the helper enforce? Supported algorithms, response_types_supported, etc.?
-2. **Caching strategy.** In-memory only, or also disk? TTL?
-3. **Failure mode at startup.** Fail closed (refuse to boot) vs. fail open with loud warning + auth disabled?
-4. **Backward-compat window.** How long do we keep the duplicate-env-var fallback before deleting it?
-5. **Lock-file pattern?** A `gub.lock.json` checked into the implementer's repo containing the resolved discovery doc + GUB key fingerprints. Any mid-flight change to GUB's discovery would loudly fail verification on the implementer side. Probably overkill for current trust model, but worth flagging.
+1. **Discovery doc validation rigor.** Beyond `issuer === GUB_URL`, what should the helper enforce? Supported algorithms, response_types_supported, etc.? (Implementation detail; team approved the consolidated shape and we'll pick conservative defaults.)
+2. **Backward-compat window.** How long do we keep the duplicate-env-var fallback before deleting it? (Operational; pick during Phase 3.)
+
+## Considered and deferred
+
+### `gub.lock.json` lock-file pattern
+
+**Original idea:** an implementer-side file pinning GUB's JWKS thumbprints, checked on every JWKS fetch. Any mid-flight change to GUB's keys would loudly fail verification on the implementer side.
+
+**Decision: defer indefinitely.** The threat model and operational risk profile is essentially HPKP-for-JWKS, and the industry deprecated HPKP for these reasons:
+
+- The narrow attack it defends against — substitution of GUB's JWKS at the network layer, where the attacker can't compromise GUB itself — is exotic given HTTPS + certificate transparency.
+- Operational cost is paid continuously: every GUB signing-key rotation requires every implementer to re-lock and ship, with the failure mode being "auth broken in prod until they notice." HPKP's death was driven by exactly these rotation outages.
+- For our shape (small set of internal implementers, GUB owns signing keys and the per-request access control, implementers' apps mostly read data from GUB rather than relying on local trust in token claims), the lock file's expected value is below the maintenance cost.
+- The security team's framing was that the lock file's job is to defend JWKS authenticity specifically, with explicit acknowledgment that **GUB's per-request access control is the deepest defense**. That framing argues for spending engineering time on tightening GUB-side controls, not adding implementer-side ceremony.
+
+**What we're doing instead:**
+- Tightening discovery-doc validation (HTTPS-only, `issuer === GUB_URL`, fail-closed on fetch failure).
+- Adding GUB-side operational monitoring on JWKS changes that aren't part of a planned rotation — catches the realistic compromise scenario from where it actually belongs.
+- Documenting the trust model clearly so implementers understand HTTPS + discovery validation is the boundary; no false sense of security.
+
+**Conditions to revisit:** if we onboard external implementers we don't operationally control (third parties, paying customers), or if a real JWKS-substitution incident surfaces in threat reporting.
 
 ## Out of scope
 
@@ -142,14 +159,22 @@ Three phases, each independently shippable:
 
 ## Asks for the security team
 
-1. Sign off (or push back) on the consolidated config shape.
-2. Decide between fail-closed and fail-open at SDK startup if discovery can't be fetched.
-3. Decide on the caching strategy.
-4. Confirm `app_id`-as-code-constant is acceptable (identity, not credential).
-5. ~~Confirm SDK auto-verifying `aud === appId` is acceptable in place of implementer-typed `GUB_AUDIENCE`.~~ ✅ **Decided — see Decisions log.**
+All resolved — see Decisions log.
+
+1. ~~Sign off on the consolidated config shape.~~ ✅
+2. ~~Fail-closed vs. fail-open at SDK startup if discovery can't be fetched.~~ ✅
+3. ~~Caching strategy.~~ ✅
+4. ~~Confirm `app_id`-as-code-constant is acceptable.~~ ✅
+5. ~~Confirm SDK auto-verifying `aud === appId` is acceptable.~~ ✅
+6. ~~Lock-file pattern.~~ ⛔ Deferred — see "Considered and deferred."
 
 ## Decisions log
 
 | Date | Topic | Decision | Source |
 |---|---|---|---|
+| 2026-05-01 | Consolidated config shape | Approved. Two env vars (`GUB_URL`, `GOOGLE_CLIENT_ID`) + one code constant (`appId`). Helper `defineGUBConfig` resolves framework prefix variants and fetches the discovery doc lazily. | Security team |
+| 2026-05-01 | Startup failure mode | Fail closed. If the SDK can't fetch + validate the discovery doc at first use, it refuses to verify tokens and surfaces a loud error. Retries with backoff during the fetch attempt itself; never silently degrades. | Security team |
+| 2026-05-01 | Caching strategy | In-memory only. Discovery doc + JWKS are refetched on cold start; no on-disk cache (a tampered cache would become the trust anchor). | Security team |
+| 2026-05-01 | `app_id` as code constant | Approved. `app_id` is identity, not credential — source-repo visibility is fine. Putting it in code prevents per-environment drift. | Security team |
 | 2026-05-01 | Audience verification API | `verifyGUBToken(token)` is the entire signature. Audience verification is baked in against `GUB.appId`. **No `audience` parameter, no `skipAudienceCheck` flag, no "trusted audiences" array.** Future cross-app verification needs get designed as a GUB-side token-exchange endpoint, not a runtime SDK escape hatch. | Security team recommendation |
+| 2026-05-01 | Lock-file pattern (`gub.lock.json`) | **Deferred indefinitely.** Same shape and operational risk as HPKP, which the industry deprecated. Threat model doesn't fit our setup; engineering time better spent tightening GUB-side controls (discovery validation, JWKS-change monitoring). Revisit if external implementers or a real incident surface. See "Considered and deferred" for full reasoning. | Discussion w/ security team |
