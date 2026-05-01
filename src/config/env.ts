@@ -22,7 +22,16 @@ const EnvSchema = z.object({
 
   APP_DB_CONNECTIONS: AppDbConnectionsSchema,
 
-  GOOGLE_CLIENT_ID: z.string().min(1, 'GOOGLE_CLIENT_ID is required'),
+  // .trim() before validation: Secret Manager values created via
+  // `echo "x" | gcloud secrets create` carry a trailing newline. That
+  // newline silently propagates into token-audience comparisons (where
+  // it never matches what Google issues), bricking sign-in. Trimming
+  // here is defense-in-depth — fix the secret, and also strip any
+  // trailing whitespace at read-time.
+  GOOGLE_CLIENT_ID: z
+    .string()
+    .transform((s) => s.trim())
+    .pipe(z.string().min(1, 'GOOGLE_CLIENT_ID is required')),
   // DEPRECATED — the audience allow-list moved to the trusted_apps DB
   // table (see migration 20260430040000_trusted_apps_registry and
   // services/google.service.ts). The env var is no longer read by the
