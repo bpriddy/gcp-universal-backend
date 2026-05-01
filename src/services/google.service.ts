@@ -216,15 +216,77 @@ function decodeUnverifiedAudience(idToken: string): string | null {
 }
 
 /**
- * Boot-time idempotent seed: ensures the env GOOGLE_CLIENT_ID appears on
- * at least one active trusted_apps row. Without this, post-migration the
- * broker can't verify any token (its `aud` is GUB's own client_id, which
- * starts out on no row).
+ * Boot-time idempotent seed + cleanup for the trusted_apps registry.
  *
- * Called once from src/server.ts at startup. Safe to re-run; no-op if a
- * row already covers GUB's client_id.
+ *   1. Cleanup pass — strips leading/trailing whitespace from every
+ *      string in trusted_apps.origins[] and trusted_apps.googleClientIds[].
+ *      Drops blanks. De-duplicates. This catches the class of bug where
+ *      a Secret Manager value carried a trailing newline and ended up
+ *      copied verbatim into a row's array (the contaminated value would
+ *      never match what Google actually issues, silently bricking sign-
+ *      in for that app).
+ *
+ *   2. Self-seed — ensures the env GOOGLE_CLIENT_ID appears on at least
+ *      one active trusted_apps row. Without this, post-migration the
+ *      broker can't verify any token (its `aud` is GUB's own client_id,
+ *      which starts out on no row).
+ *
+ * Called once from src/server.ts at startup. Safe to re-run.
  */
 export async function ensureSelfTrustedApp(): Promise<void> {
+  // ── 1. Whitespace cleanup pass ──────────────────────────────────────────
+  // Fetch every row, normalize its arrays in-app (Postgres array element
+  // string trimming is awkward; doing it in JS is clearer). Only writes
+  // back when something actually changed, to avoid noisy updated_at bumps.
+  const rows = await prisma.trustedApp.findMany({
+    select: { id: true, origins: true, googleClientIds: true },
+  });
+
+  const normalize = (arr: string[]): string[] => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const v of arr) {
+      const t = typeof v === 'string' ? v.trim() : '';
+      if (!t || seen.has(t)) continue;
+      seen.add(t);
+      out.push(t);
+    }
+    return out;
+  };
+
+  let cleanedRows = 0;
+  for (const row of rows) {
+    const newOrigins = normalize(row.origins);
+    const newClientIds = normalize(row.googleClientIds);
+    const originsChanged =
+      newOrigins.length !== row.origins.length ||
+      newOrigins.some((v, i) => v !== row.origins[i]);
+    const idsChanged =
+      newClientIds.length !== row.googleClientIds.length ||
+      newClientIds.some((v, i) => v !== row.googleClientIds[i]);
+
+    if (originsChanged || idsChanged) {
+      await prisma.trustedApp.update({
+        where: { id: row.id },
+        data: {
+          ...(originsChanged ? { origins: newOrigins } : {}),
+          ...(idsChanged ? { googleClientIds: newClientIds } : {}),
+        },
+      });
+      cleanedRows += 1;
+    }
+  }
+  if (cleanedRows > 0) {
+    logger.warn(
+      { cleanedRows },
+      '[ensureSelfTrustedApp] normalized whitespace in trusted_apps array values',
+    );
+  }
+
+  // ── 2. Post-cleanup self-seed ───────────────────────────────────────────
+  // After normalization, do the membership check against the trimmed env
+  // value — this gives the right answer even if a previous boot inserted
+  // a contaminated row that the cleanup pass just repaired.
   const clientId = config.GOOGLE_CLIENT_ID;
   if (!clientId) return;
 
