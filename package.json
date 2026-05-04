@@ -5,6 +5,7 @@
   "main": "dist/server.js",
   "exports": {
     ".": "./dist/server.js",
+    "./sdk/config": "./sdk/config.ts",
     "./sdk/frontend": "./sdk/frontend/index.tsx",
     "./sdk/backend": "./sdk/backend/index.ts"
   },

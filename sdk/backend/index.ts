@@ -7,11 +7,25 @@
  * Install:
  *   npm install github:bpriddy/gcp-universal-backend
  *
- * Usage:
+ * Usage (new shape — recommended):
+ *   import { defineGUBConfig } from 'gcp-universal-backend/sdk/config'
  *   import { createGUBClient } from 'gcp-universal-backend/sdk/backend'
+ *
+ *   const GUB = defineGUBConfig({
+ *     url:            process.env.GUB_URL!,
+ *     googleClientId: process.env.GOOGLE_CLIENT_ID!,
+ *     appId:          'workflows-dashboard',
+ *   });
+ *   export const gub = createGUBClient(GUB);
+ *
+ * Legacy shape still accepted (deprecation warning logged):
+ *   createGUBClient({ gubUrl, issuer, audience })
+ *
+ * Migration: see sdk/USAGE.md "Migrating from <0.x>".
  */
 
-import { createRemoteJWKSet, jwtVerify } from 'jose';
+import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from 'jose';
+import { defineGUBConfig, type GUBConfig, type GUBConfigInput } from '../config';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -36,6 +50,11 @@ export interface GUBTokenPayload {
   jti: string;
 }
 
+/**
+ * @deprecated Use `defineGUBConfig({ url, googleClientId, appId })` and
+ * pass the result to `createGUBClient` instead. This shape will be
+ * removed in a future major version. See sdk/USAGE.md.
+ */
 export interface GUBClientConfig {
   /** GUB backend URL — e.g. https://gub.yourdomain.com */
   gubUrl: string;
@@ -184,41 +203,68 @@ type Role = 'viewer' | 'contributor' | 'manager' | 'admin';
  * Create a GUB client for your backend service.
  * Call once at startup and import the result wherever needed.
  *
- * @example
- * // gub.ts
- * import { createGUBClient } from 'gcp-universal-backend/sdk/backend'
+ * Three input shapes are accepted:
  *
- * export const gub = createGUBClient({
- *   gubUrl:   process.env.GUB_URL!,
- *   issuer:   process.env.GUB_ISSUER!,
- *   audience: process.env.GUB_AUDIENCE!,
- * })
+ *   1. A {@link GUBConfig} from `defineGUBConfig({ url, googleClientId, appId })`.
+ *      Recommended. Issuer + JWKS URI are discovered from GUB; audience is
+ *      pinned to `appId` with no override.
+ *
+ *   2. The raw {@link GUBConfigInput} — the same `{ url, googleClientId, appId }`
+ *      shape `defineGUBConfig` takes. Convenience for callers who don't
+ *      need to use the config object elsewhere.
+ *
+ *   3. The legacy `{ gubUrl, issuer, audience }` shape, accepted with a
+ *      deprecation warning. Will be removed in a future major version.
+ *
+ * @example
+ *   // Recommended:
+ *   import { defineGUBConfig } from 'gcp-universal-backend/sdk/config';
+ *   import { createGUBClient } from 'gcp-universal-backend/sdk/backend';
+ *
+ *   const GUB = defineGUBConfig({
+ *     url:            process.env.GUB_URL!,
+ *     googleClientId: process.env.GOOGLE_CLIENT_ID!,
+ *     appId:          'workflows-dashboard',
+ *   });
+ *   export const gub = createGUBClient(GUB);
  */
-export function createGUBClient(config: GUBClientConfig) {
-  const { gubUrl, issuer, audience } = config;
-  const baseUrl = gubUrl.replace(/\/$/, '');
+export function createGUBClient(config: GUBConfig | GUBConfigInput | GUBClientConfig) {
+  const gub = normalizeConfig(config);
+  const baseUrl = gub.url;
 
-  // JWKS fetched from GUB's standard discovery endpoint and cached locally.
-  // Auto-refreshes when the key rotates — no manual intervention needed.
-  const JWKS = createRemoteJWKSet(
-    new URL(`${baseUrl}/.well-known/jwks.json`),
-    { cacheMaxAge: 10 * 60 * 1000 }, // 10 minutes
-  );
+  // JWKS construction is lazy — needs the discovery doc to know jwks_uri.
+  // First verifyToken call triggers discovery fetch + JWKS init; reused
+  // for every subsequent verification.
+  let jwksGetter: JWTVerifyGetKey | null = null;
+  async function getJwksGetter(): Promise<JWTVerifyGetKey> {
+    if (!jwksGetter) {
+      const jwksUri = await gub.getJwksUri();
+      jwksGetter = createRemoteJWKSet(new URL(jwksUri), { cacheMaxAge: 10 * 60 * 1000 });
+    }
+    return jwksGetter;
+  }
 
   // ── Token verification ───────────────────────────────────────────────────
 
   /**
    * Verify a JWT and return its typed payload.
-   * Use this for programmatic access when middleware is not appropriate.
+   *
+   * Audience verification is **baked in** against `gub.appId` — there is
+   * no `audience` parameter, no `skipAudienceCheck` flag, no "trusted
+   * audiences" array. If a real cross-app verification need surfaces,
+   * design a token-exchange endpoint at GUB rather than reaching for a
+   * runtime SDK escape hatch.
    *
    * @example
-   * const payload = await gub.verifyToken(token)
-   * console.log(payload.email, payload.isAdmin)
+   *   const payload = await gub.verifyToken(token)
+   *   console.log(payload.email, payload.isAdmin)
    */
   async function verifyToken(token: string): Promise<GUBTokenPayload> {
-    const { payload } = await jwtVerify(token, JWKS, {
+    const issuer = await gub.getIssuer();
+    const jwks = await getJwksGetter();
+    const { payload } = await jwtVerify(token, jwks, {
       issuer,
-      audience,
+      audience: gub.appId,
       algorithms: ['RS256'],
     });
     return payload as unknown as GUBTokenPayload;
@@ -228,14 +274,19 @@ export function createGUBClient(config: GUBClientConfig) {
 
   /**
    * Express/Connect middleware that verifies the Bearer JWT and attaches
-   * req.gub = { user, appPermission } for use in route handlers.
+   * `req.gub = { user, appPermission }` for use in route handlers.
+   *
+   * Permission resolution uses the configured `appId` by default. Pass a
+   * different `appId` only if this middleware needs to scope to a *different*
+   * app — rare, but supported (e.g. a service that hosts handlers for
+   * multiple registered apps and switches per-route).
    *
    * @example
-   * // Protect all routes
-   * app.use(gub.middleware())
+   *   // Protect all routes (uses GUB.appId)
+   *   app.use(gub.middleware())
    *
-   * // Protect a single route and scope to a specific app
-   * app.get('/data', gub.middleware('my-app-id'), handler)
+   *   // Scope to a different app for a single route
+   *   app.get('/admin', gub.middleware('admin-console'), handler)
    */
   function middleware(appId?: string) {
     return async function gubMiddleware(
@@ -256,7 +307,7 @@ export function createGUBClient(config: GUBClientConfig) {
 
       try {
         const user = await verifyToken(token);
-        const resolvedAppId = appId ?? audience;
+        const resolvedAppId = appId ?? gub.appId;
 
         (req as GUBRequest & { gub: GUBRequestContext }).gub = {
           user,
@@ -451,6 +502,53 @@ export function createGUBClient(config: GUBClientConfig) {
 
   return { verifyToken, middleware, requireRole, org };
 }
+
+// ── Config normalization ───────────────────────────────────────────────────
+
+/**
+ * Accept any of the three input shapes and return a canonical {@link GUBConfig}.
+ * Centralizes the legacy-shape detection + deprecation warning so the
+ * verifyToken / middleware code paths only ever see the new shape.
+ */
+function normalizeConfig(
+  input: GUBConfig | GUBConfigInput | GUBClientConfig,
+): GUBConfig {
+  // Already a GUBConfig (from defineGUBConfig). Both legacy and input
+  // shapes lack the `getDiscovery` method, so this is a reliable check.
+  if (typeof (input as GUBConfig).getDiscovery === 'function') {
+    return input as GUBConfig;
+  }
+
+  // Legacy shape: { gubUrl, issuer, audience }. We've kept supporting it
+  // for one release so existing implementers don't break on upgrade,
+  // but it's deprecated and will be removed in a future major version.
+  if ('gubUrl' in input) {
+    const legacy = input as GUBClientConfig;
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[gub-sdk] createGUBClient({ gubUrl, issuer, audience }) is deprecated. ' +
+        'Use defineGUBConfig({ url, googleClientId, appId }) and pass the ' +
+        'result to createGUBClient. See sdk/USAGE.md "Migrating from <0.x>".',
+    );
+    // We don't have a googleClientId in the legacy shape — synthesize a
+    // placeholder. It's only used by the frontend SDK; backends never
+    // reference it. The `audience` field becomes the `appId` since
+    // historically that's how implementers used it.
+    return defineGUBConfig({
+      url: legacy.gubUrl,
+      googleClientId: '0-deprecated.apps.googleusercontent.com',
+      appId: legacy.audience,
+    });
+  }
+
+  // Raw input shape: { url, googleClientId, appId }. Wrap it.
+  return defineGUBConfig(input as GUBConfigInput);
+}
+
+// Re-export defineGUBConfig + types so backend consumers can import
+// everything they need from one path if they prefer.
+export { defineGUBConfig } from '../config';
+export type { GUBConfig, GUBConfigInput, DiscoveryDoc, GUBConfigError } from '../config';
 
 // ── Express type augmentation ──────────────────────────────────────────────
 // Add this to your project's type declarations to get req.gub typed:

@@ -7,8 +7,22 @@
  * Install:
  *   npm install github:bpriddy/gcp-universal-backend
  *
- * Usage:
+ * Usage (new shape — recommended):
+ *   import { defineGUBConfig } from 'gcp-universal-backend/sdk/config'
  *   import { GUBProvider, useGUB } from 'gcp-universal-backend/sdk/frontend'
+ *
+ *   const GUB = defineGUBConfig({
+ *     url:            import.meta.env.VITE_GUB_URL,
+ *     googleClientId: import.meta.env.VITE_GOOGLE_CLIENT_ID,
+ *     appId:          'workflows-dashboard',
+ *   });
+ *
+ *   <GUBProvider config={GUB}>{children}</GUBProvider>
+ *
+ * Legacy shape still accepted (deprecation warning logged):
+ *   <GUBProvider config={{ gubUrl, googleClientId }}>
+ *
+ * Migration: see sdk/USAGE.md "Migrating from <0.x>".
  */
 
 import React, {
@@ -19,6 +33,12 @@ import React, {
   useRef,
   useState,
 } from 'react';
+import { defineGUBConfig, type GUBConfig, type GUBConfigInput } from '../config';
+
+// Re-export so `<GUBProvider>` callers can `import { defineGUBConfig }`
+// from the same path they import the provider from.
+export { defineGUBConfig };
+export type { GUBConfig, GUBConfigInput };
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -40,7 +60,12 @@ export interface GUBUser {
   exp: number;
 }
 
-export interface GUBConfig {
+/**
+ * @deprecated Use `defineGUBConfig({ url, googleClientId, appId })` and
+ * pass the result to `<GUBProvider>` instead. This shape will be removed
+ * in a future major version. See sdk/USAGE.md.
+ */
+export interface LegacyGUBConfig {
   /** GUB backend URL — e.g. https://gub.yourdomain.com */
   gubUrl: string;
   /** Google OAuth client ID */
@@ -155,7 +180,17 @@ const GUBContext = createContext<GUBContextValue | null>(null);
 // ── Provider ───────────────────────────────────────────────────────────────
 
 export interface GUBProviderProps {
-  config: GUBConfig;
+  /**
+   * Three input shapes are accepted:
+   *
+   *   1. A {@link GUBConfig} from `defineGUBConfig({ url, googleClientId, appId })`.
+   *      Recommended.
+   *   2. The raw {@link GUBConfigInput} — the same `{ url, googleClientId, appId }`
+   *      shape `defineGUBConfig` takes. Convenience.
+   *   3. The legacy `{ gubUrl, googleClientId }` shape, accepted with a
+   *      deprecation warning. Will be removed in a future major version.
+   */
+  config: GUBConfig | GUBConfigInput | LegacyGUBConfig;
   children: React.ReactNode;
   /**
    * If provided, restore a previous session on mount instead of requiring a
@@ -184,11 +219,22 @@ export interface GUBProviderProps {
  * Wrap your app with GUBProvider at the root level.
  *
  * @example
- * <GUBProvider config={{ gubUrl: '...', googleClientId: '...' }}>
- *   <App />
- * </GUBProvider>
+ *   const GUB = defineGUBConfig({
+ *     url:            import.meta.env.VITE_GUB_URL,
+ *     googleClientId: import.meta.env.VITE_GOOGLE_CLIENT_ID,
+ *     appId:          'workflows-dashboard',
+ *   });
+ *
+ *   <GUBProvider config={GUB}>
+ *     <App />
+ *   </GUBProvider>
  */
 export function GUBProvider({ config, children, initialRefreshToken, onTokensChange }: GUBProviderProps) {
+  // Normalize once per mount: legacy + raw-input shapes get folded into a
+  // GUBConfig so the rest of the component reads from a single canonical
+  // source. The dependency-array shape stays stable across renders.
+  const gub = useNormalizedConfig(config);
+
   const [user, setUser] = useState<GUBUser | null>(null);
   const [accessToken, setAccessToken] = useState<string | null>(null);
   // Initialize to `true` when an initial refresh token is present. The restore
@@ -199,7 +245,7 @@ export function GUBProvider({ config, children, initialRefreshToken, onTokensCha
   const [isLoading, setIsLoading] = useState<boolean>(() => Boolean(initialRefreshToken));
   const [isRestoring, setIsRestoring] = useState<boolean>(() => Boolean(initialRefreshToken));
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const baseUrl = config.gubUrl.replace(/\/$/, '');
+  const baseUrl = gub.url;
 
   // Stable ref for onTokensChange so it doesn't re-trigger memoized callbacks
   const onTokensChangeRef = useRef(onTokensChange);
@@ -260,8 +306,10 @@ export function GUBProvider({ config, children, initialRefreshToken, onTokensCha
         const res = await window.fetch(`${baseUrl}/auth/google/exchange`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          // GUB expects idToken — the GIS credential IS an ID token
-          body: JSON.stringify({ idToken: credential }),
+          // GUB expects idToken — the GIS credential IS an ID token.
+          // appId scopes the exchange to this app's permissions and
+          // gets stamped into the issued JWT's `aud` claim.
+          body: JSON.stringify({ idToken: credential, appId: gub.appId }),
         });
         if (!res.ok) {
           const err = await res.json().catch(() => ({})) as { message?: string };
@@ -282,7 +330,7 @@ export function GUBProvider({ config, children, initialRefreshToken, onTokensCha
     try {
       await loadGoogleScript();
       window.google!.accounts.id.initialize({
-        client_id: config.googleClientId,
+        client_id: gub.googleClientId,
         callback: ({ credential }) => exchangeGoogleCredential(credential),
         auto_select: false,
         cancel_on_tap_outside: true,
@@ -297,7 +345,7 @@ export function GUBProvider({ config, children, initialRefreshToken, onTokensCha
       setIsLoading(false);
       throw err;
     }
-  }, [config.googleClientId, exchangeGoogleCredential]);
+  }, [gub.googleClientId, exchangeGoogleCredential]);
 
   // Logout — revoke refresh token then clear local state
   const logout = useCallback(async () => {
@@ -466,4 +514,73 @@ export function GUBLoginButton({ className }: { className?: string }) {
       Sign in with Google
     </button>
   );
+}
+
+// ── Internal: config normalization ─────────────────────────────────────────
+
+/**
+ * Accept any of the three input shapes and return a stable {@link GUBConfig}
+ * for the rest of the component to consume. The legacy `{ gubUrl,
+ * googleClientId }` shape gets a one-time `console.warn`.
+ *
+ * Memoized on the structural identity of the input — same identity
+ * across renders means same returned config (lazy discovery cache stays
+ * intact). When the implementer's config object IS already a GUBConfig,
+ * we just return it; defineGUBConfig is only invoked for the raw-input
+ * and legacy shapes.
+ */
+function useNormalizedConfig(
+  input: GUBConfig | GUBConfigInput | LegacyGUBConfig,
+): GUBConfig {
+  // Stable instance via useRef — recompute only if the input identity
+  // changes (which an implementer would do deliberately).
+  const cacheRef = useRef<{ source: unknown; resolved: GUBConfig } | null>(null);
+  if (cacheRef.current && cacheRef.current.source === input) {
+    return cacheRef.current.resolved;
+  }
+
+  const resolved = normalizeConfig(input);
+  cacheRef.current = { source: input, resolved };
+  return resolved;
+}
+
+function normalizeConfig(
+  input: GUBConfig | GUBConfigInput | LegacyGUBConfig,
+): GUBConfig {
+  // Already a full GUBConfig (from defineGUBConfig) — use as-is. The
+  // presence of the `getDiscovery` method is a reliable distinguisher.
+  if (typeof (input as GUBConfig).getDiscovery === 'function') {
+    return input as GUBConfig;
+  }
+
+  // Legacy shape: { gubUrl, googleClientId }. We've kept supporting it
+  // for one release so existing implementers don't break on upgrade,
+  // but it's deprecated and will be removed in a future major version.
+  if ('gubUrl' in input && !('url' in input)) {
+    const legacy = input as LegacyGUBConfig;
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[gub-sdk] <GUBProvider config={{ gubUrl, googleClientId }}> is deprecated. ' +
+        'Use defineGUBConfig({ url, googleClientId, appId }) and pass the result. ' +
+        'See sdk/USAGE.md "Migrating from <0.x>".',
+    );
+    // Legacy provider didn't carry an appId — synthesize one from the
+    // hostname so the token-exchange request still has a stable value.
+    // Implementers who relied on the legacy shape were already routing
+    // through the audience claim implicitly; this preserves that behavior.
+    let synthesizedAppId = 'gub-frontend-legacy';
+    try {
+      synthesizedAppId = `legacy-${new URL(legacy.gubUrl).hostname}`;
+    } catch {
+      // fall through to the generic placeholder
+    }
+    return defineGUBConfig({
+      url: legacy.gubUrl,
+      googleClientId: legacy.googleClientId,
+      appId: synthesizedAppId,
+    });
+  }
+
+  // Raw input shape: { url, googleClientId, appId }. Wrap it.
+  return defineGUBConfig(input as GUBConfigInput);
 }
