@@ -215,47 +215,6 @@ export async function listMyAccessRequests(
   }
 }
 
-// ── App access requests ────────────────────────────────────────────────────
-
-export async function createAppAccessRequest(
-  req: Request,
-  res: Response,
-  next: NextFunction,
-): Promise<void> {
-  try {
-    const { userId } = identity(req);
-    const parsed = orgService.CreateAppAccessRequestSchema.safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({ code: 'VALIDATION_ERROR', error: parsed.error.flatten() });
-      return;
-    }
-    const request = await orgService.createAppAccessRequest(userId, parsed.data);
-    res.status(201).json(request);
-  } catch (err) {
-    // Surface the already-granted 409 cleanly
-    const e = err as { code?: string; status?: number; message?: string };
-    if (e.code === 'ALREADY_GRANTED') {
-      res.status(409).json({ code: 'ALREADY_GRANTED', message: e.message });
-      return;
-    }
-    handleError(err, res, next);
-  }
-}
-
-export async function listMyAppAccessRequests(
-  req: Request,
-  res: Response,
-  next: NextFunction,
-): Promise<void> {
-  try {
-    const { userId } = identity(req);
-    const requests = await orgService.listMyAppAccessRequests(userId);
-    res.status(200).json(requests);
-  } catch (err) {
-    handleError(err, res, next);
-  }
-}
-
 // ── Staff metadata ─────────────────────────────────────────────────────────
 
 export async function listStaffMetadata(

@@ -52,32 +52,8 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction): v
   next();
 }
 
-/**
- * Per-route middleware factory that checks the authenticated user has
- * permission for a specific appId and attaches the corresponding DB pool.
- *
- * Usage:  router.get('/data', authenticate, requireAppAccess('analytics'), handler)
- */
-export function requireAppAccess(appId: string) {
-  return function (req: Request, res: Response, next: NextFunction): void {
-    if (!req.user) {
-      res.status(401).json({ code: 'UNAUTHORIZED', message: 'Not authenticated' });
-      return;
-    }
-
-    const permission = req.user.permissions.find((p) => p.appId === appId);
-
-    if (!permission) {
-      res.status(403).json({
-        code: 'FORBIDDEN',
-        message: `You do not have access to application '${appId}'`,
-      });
-      return;
-    }
-
-    // dbIdentifier-based pool routing is resolved from the App table at deploy
-    // time for isolated-tenant apps.  No routing needed for standard apps.
-    req.appId = appId;
-    next();
-  };
-}
+// Removed (2026-05-04): requireAppAccess middleware. App-level "can this
+// user use this app?" decisions belong to each consuming app, not GUB —
+// see docs/proposals/remove-app-access-gating.md. The middleware was
+// unused at the time of removal; gub-admin uses requireAdmin for its
+// own admin-only routes, which is a different (platform-wide) check.

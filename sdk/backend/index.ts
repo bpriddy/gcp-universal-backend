@@ -29,21 +29,28 @@ import { defineGUBConfig, type GUBConfig, type GUBConfigInput } from '../config'
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
-export interface TokenPermission {
-  appId: string;
-  dbIdentifier: string;
-  role: string;
-}
-
+/**
+ * Decoded GUB JWT payload.
+ *
+ * Note (2026-05-04): the `permissions` field was removed. App-level
+ * authorization belongs in each consuming app, not in GUB-issued tokens.
+ * Implementers needing role/permission gating should source those from
+ * their own backend on top of the JWT identity claims. See
+ * docs/proposals/remove-app-access-gating.md.
+ */
 export interface GUBTokenPayload {
   /** User UUID — users.id in the GUB database */
   sub: string;
   email: string;
   displayName: string | null;
-  /** Superuser flag — bypasses all access_grants checks on GUB */
+  /** Superuser flag — bypasses all access_grants checks on GUB's own org-data API */
   isAdmin: boolean;
-  permissions: TokenPermission[];
   iss: string;
+  /**
+   * Multi-audience: includes both `gub.appId` (for the consumer's verifier)
+   * and `JWT_AUDIENCE` (so the consumer's `gub.org()` server-to-server
+   * calls back to GUB still pass GUB's verifier).
+   */
   aud: string | string[];
   iat: number;
   exp: number;
@@ -79,8 +86,6 @@ export type GUBNextFunction = (err?: unknown) => void;
 /** Attached to req.gub after successful JWT verification */
 export interface GUBRequestContext {
   user: GUBTokenPayload;
-  /** Permission entry for the app this backend serves, if present */
-  appPermission: TokenPermission | undefined;
 }
 
 // ── Org data types ─────────────────────────────────────────────────────────
@@ -186,17 +191,6 @@ export interface GUBUserRecord {
   updatedAt: string;
 }
 
-// ── Role ranking ───────────────────────────────────────────────────────────
-
-const ROLE_RANK: Record<string, number> = {
-  viewer: 0,
-  contributor: 1,
-  manager: 2,
-  admin: 3,
-};
-
-type Role = 'viewer' | 'contributor' | 'manager' | 'admin';
-
 // ── GUB Client factory ─────────────────────────────────────────────────────
 
 /**
@@ -274,21 +268,19 @@ export function createGUBClient(config: GUBConfig | GUBConfigInput | GUBClientCo
 
   /**
    * Express/Connect middleware that verifies the Bearer JWT and attaches
-   * `req.gub = { user, appPermission }` for use in route handlers.
+   * `req.gub = { user }` for use in route handlers.
    *
-   * Permission resolution uses the configured `appId` by default. Pass a
-   * different `appId` only if this middleware needs to scope to a *different*
-   * app — rare, but supported (e.g. a service that hosts handlers for
-   * multiple registered apps and switches per-route).
+   * Note (2026-05-04): the previous `appPermission` field on the context
+   * was removed along with the per-app authorization gate at GUB. App-
+   * level "can this user use my app?" decisions now belong in your own
+   * app — typically as a check on `req.gub.user` against your own DB.
+   * See docs/proposals/remove-app-access-gating.md.
    *
    * @example
-   *   // Protect all routes (uses GUB.appId)
    *   app.use(gub.middleware())
-   *
-   *   // Scope to a different app for a single route
-   *   app.get('/admin', gub.middleware('admin-console'), handler)
+   *   app.get('/me', (req, res) => res.json(req.gub.user))
    */
-  function middleware(appId?: string) {
+  function middleware() {
     return async function gubMiddleware(
       req: GUBRequest,
       res: GUBResponse,
@@ -307,13 +299,7 @@ export function createGUBClient(config: GUBConfig | GUBConfigInput | GUBClientCo
 
       try {
         const user = await verifyToken(token);
-        const resolvedAppId = appId ?? gub.appId;
-
-        (req as GUBRequest & { gub: GUBRequestContext }).gub = {
-          user,
-          appPermission: user.permissions.find((p) => p.appId === resolvedAppId),
-        };
-
+        (req as GUBRequest & { gub: GUBRequestContext }).gub = { user };
         next();
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Invalid token';
@@ -322,57 +308,11 @@ export function createGUBClient(config: GUBConfig | GUBConfigInput | GUBClientCo
     };
   }
 
-  // ── Role gate ────────────────────────────────────────────────────────────
-
-  /**
-   * Require a minimum role. Must be used after gub.middleware().
-   * isAdmin users bypass all role checks.
-   *
-   * Role order: viewer < contributor < manager < admin
-   *
-   * @example
-   * app.get('/reports',    gub.requireRole('viewer'),      handler)
-   * app.post('/campaigns', gub.requireRole('contributor'), handler)
-   * app.delete('/data',    gub.requireRole('admin'),       handler)
-   */
-  function requireRole(minimumRole: Role) {
-    return function roleMiddleware(
-      req: GUBRequest,
-      res: GUBResponse,
-      next: GUBNextFunction,
-    ): void {
-      const ctx = (req as GUBRequest & { gub?: GUBRequestContext }).gub;
-
-      if (!ctx) {
-        res.status(401).json({ code: 'UNAUTHORIZED', error: 'Not authenticated' });
-        return;
-      }
-
-      // Admins bypass all role checks
-      if (ctx.user.isAdmin) {
-        next();
-        return;
-      }
-
-      if (!ctx.appPermission) {
-        res.status(403).json({ code: 'NO_APP_PERMISSION', error: 'No permission for this application' });
-        return;
-      }
-
-      const userRank = ROLE_RANK[ctx.appPermission.role] ?? -1;
-      const requiredRank = ROLE_RANK[minimumRole];
-
-      if (userRank < requiredRank) {
-        res.status(403).json({
-          code: 'INSUFFICIENT_ROLE',
-          error: `Requires '${minimumRole}' role or higher`,
-        });
-        return;
-      }
-
-      next();
-    };
-  }
+  // requireRole was here. Removed (2026-05-04): no per-app role data
+  // lives in GUB JWTs anymore. Implementers needing role-tier gating
+  // should source roles from their own DB on top of req.gub.user
+  // (identity) and write a thin middleware in their own codebase. See
+  // docs/proposals/remove-app-access-gating.md.
 
   // ── Org data client ──────────────────────────────────────────────────────
   // Server-to-server calls to GUB for org data (accounts, campaigns, staff).
@@ -500,7 +440,7 @@ export function createGUBClient(config: GUBConfig | GUBConfigInput | GUBClientCo
     };
   }
 
-  return { verifyToken, middleware, requireRole, org };
+  return { verifyToken, middleware, org };
 }
 
 // ── Config normalization ───────────────────────────────────────────────────
