@@ -144,6 +144,7 @@ export async function completeSyncRun(
 
 const SOURCE_LABELS: Record<string, string> = {
   google_directory: 'Google Directory Sync',
+  google_groups: 'Google Groups Sync',
   workfront: 'Workfront Sync',
   google_drive: 'Google Drive Sync',
 };
