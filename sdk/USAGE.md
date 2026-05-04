@@ -29,20 +29,50 @@ npm install github:bpriddy/gcp-universal-backend
 
 ---
 
-## Environment variables
+## Configuration — one declaration, used everywhere
 
-### Frontend
+GUB uses a single config helper that the frontend and backend both consume.
+Two env vars + one code constant; nothing is duplicated.
+
+### Environment variables
+
 ```env
+# Frontend (use whatever prefix your build tool requires —
+# VITE_*, NEXT_PUBLIC_*, REACT_APP_*, etc.):
 VITE_GUB_URL=https://gub.yourdomain.com
 VITE_GOOGLE_CLIENT_ID=your-google-client-id.apps.googleusercontent.com
+
+# Backend:
+GUB_URL=https://gub.yourdomain.com
+GOOGLE_CLIENT_ID=your-google-client-id.apps.googleusercontent.com
 ```
 
-### Backend
-```env
-GUB_URL=https://gub.yourdomain.com
-GUB_ISSUER=https://gub.yourdomain.com
-GUB_AUDIENCE=your-app-id
+That's it. **No `GUB_ISSUER`, no `GUB_AUDIENCE`, no `APP_ID` env var.** The
+issuer and JWKS URI come from GUB's `/.well-known/oauth-authorization-server`
+discovery doc; the audience is your `appId` declared once in code.
+
+### Shared config helper
+
+Create one file your frontend and backend both import:
+
+```ts
+// src/gub.ts
+import { defineGUBConfig } from 'gcp-universal-backend/sdk/config'
+
+export const GUB = defineGUBConfig({
+  // Use whichever your environment exposes:
+  url:            import.meta.env.VITE_GUB_URL ?? process.env.GUB_URL!,
+  googleClientId: import.meta.env.VITE_GOOGLE_CLIENT_ID ?? process.env.GOOGLE_CLIENT_ID!,
+  // appId is identity, not config — same string in dev/staging/prod.
+  // Pick a stable identifier and hardcode it here.
+  appId: 'workflows-dashboard',
+})
 ```
+
+The helper:
+- Validates the URL (https only, except loopback) and the Google client_id shape.
+- Fetches GUB's discovery doc lazily on first use, validates `discovery.issuer === url`.
+- Fails loudly on misconfiguration at startup, before any user-facing auth call.
 
 ---
 
@@ -53,13 +83,11 @@ GUB_AUDIENCE=your-app-id
 ```tsx
 // main.tsx or App.tsx
 import { GUBProvider } from 'gcp-universal-backend/sdk/frontend'
+import { GUB } from './gub'
 
 export default function App() {
   return (
-    <GUBProvider config={{
-      gubUrl: import.meta.env.VITE_GUB_URL,
-      googleClientId: import.meta.env.VITE_GOOGLE_CLIENT_ID,
-    }}>
+    <GUBProvider config={GUB}>
       <YourApp />
     </GUBProvider>
   )
@@ -146,7 +174,7 @@ won't fire prematurely). The provider signals failure via `onTokensChange(null)`
 
 ```tsx
 <GUBProvider
-  config={{ gubUrl: '...', googleClientId: '...' }}
+  config={GUB}
   initialRefreshToken={sessionCookie.refreshToken}
   onTokensChange={(tokens) => {
     if (tokens === null) {
@@ -175,15 +203,18 @@ Works with Express, Fastify, raw http, or any Node framework.
 ### 1. Create the GUB client (once at startup)
 
 ```ts
-// gub.ts — create once, import everywhere
+// gub-client.ts — create once, import everywhere
 import { createGUBClient } from 'gcp-universal-backend/sdk/backend'
+import { GUB } from './gub'  // the shared config from above
 
-export const gub = createGUBClient({
-  gubUrl:   process.env.GUB_URL!,
-  issuer:   process.env.GUB_ISSUER!,
-  audience: process.env.GUB_AUDIENCE!,
-})
+export const gub = createGUBClient(GUB)
 ```
+
+The client's `verifyToken(token)` takes one argument — the token. Audience
+verification is pinned to `GUB.appId` and cannot be overridden. There is no
+`audience` parameter, no `skipAudienceCheck` flag, no "trusted audiences"
+array. If you ever need cross-app verification, that gets designed as a
+GUB-side token-exchange endpoint, not a runtime SDK escape hatch.
 
 ### 2. Protect routes with middleware (Express)
 
@@ -369,3 +400,64 @@ Frontend                    GUB                         Your App Backend
 Token refresh happens silently in the frontend SDK — the user never sees it.
 Backends verify tokens locally using the cached JWKS public key.
 The only time a backend talks to GUB is for org data reads.
+
+---
+
+## Migrating from <0.x>
+
+Earlier SDK versions asked implementers to declare 4–6 environment variables, several of which carried the same value:
+
+```env
+# OLD shape — still accepted with a deprecation warning, will be removed in a future major version.
+GUB_URL=https://gub-dev.example.com
+VITE_GUB_URL=https://gub-dev.example.com
+GUB_ISSUER=https://gub-dev.example.com
+GUB_AUDIENCE=workflows-dashboard
+GOOGLE_CLIENT_ID=...
+VITE_GOOGLE_CLIENT_ID=...
+```
+
+…and configured the SDK like this:
+
+```tsx
+// OLD frontend
+<GUBProvider config={{ gubUrl: '...', googleClientId: '...' }}>
+
+// OLD backend
+createGUBClient({ gubUrl, issuer, audience })
+```
+
+The new shape is two env vars + one shared config file (see "Configuration — one declaration, used everywhere" at the top). Migration is mechanical:
+
+| Old | New |
+|---|---|
+| `GUB_URL` (and `VITE_GUB_URL`, `GUB_ISSUER`) | `GUB_URL` (one canonical name; declare with whatever build-tool prefix your env requires) |
+| `GUB_AUDIENCE` env var | `appId` field in `defineGUBConfig`, hardcoded |
+| `<GUBProvider config={{ gubUrl, googleClientId }}>` | `<GUBProvider config={GUB}>` where `GUB = defineGUBConfig({ url, googleClientId, appId })` |
+| `createGUBClient({ gubUrl, issuer, audience })` | `createGUBClient(GUB)` |
+| `gub.verifyToken(token, options?)` | `gub.verifyToken(token)` — audience pinned to `appId`, no override |
+
+### What stays the same
+
+- The `useGUB()` hook contract is unchanged (`user`, `login`, `logout`, `fetch`, `accessToken`, `isLoading`, `isRestoring`, `isAuthenticated`).
+- `gub.middleware()`, `gub.requireRole()`, and `gub.org()` are unchanged.
+- JWT signing keys, JWKS endpoint, refresh-token flow.
+- The `/auth/google/exchange` request contract on the wire.
+
+### Deprecation timeline
+
+| Phase | Behavior |
+|---|---|
+| Now | Old shape works, prints `console.warn(…)` once at construction. New shape recommended. |
+| Next minor | Old shape works, warning becomes more prominent. |
+| Future major | Old shape is removed. Type errors at compile time direct you to `defineGUBConfig`. |
+
+### Why the change
+
+Three problems with the old shape:
+
+1. **Repetition.** The same string declared up to 4 times (`GUB_URL` / `VITE_GUB_URL` / `GUB_ISSUER`) created drift opportunities with no benefit.
+2. **Implementer-typed values that come from discovery.** `issuer`, `jwks_uri`, etc. live in GUB's `/.well-known/oauth-authorization-server` document. The SDK now consumes that doc instead of asking implementers to retype.
+3. **Env-varring identity.** `appId` is a stable string that doesn't vary across environments. Putting it in env invited drift; it belongs in code.
+
+See `docs/proposals/sdk-config-simplification.md` in the GUB repo for the full reasoning, including the security review and decisions log.
