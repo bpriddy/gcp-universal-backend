@@ -19,8 +19,3 @@ export interface AuthResponse {
   };
 }
 
-export interface PendingApprovalResponse {
-  status: 'pending_approval';
-  userId: string;
-  appId: string;
-}

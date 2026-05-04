@@ -155,8 +155,7 @@ import { GUBLoginButton } from 'gcp-universal-backend/sdk/frontend'
 | `user.sub` | `string` | User UUID |
 | `user.email` | `string` | User email |
 | `user.displayName` | `string \| null` | Display name from Google |
-| `user.isAdmin` | `boolean` | Superuser flag |
-| `user.permissions` | `TokenPermission[]` | App-level permissions |
+| `user.isAdmin` | `boolean` | Superuser flag (bypasses GUB org-data access checks; not an app-level role) |
 | `isAuthenticated` | `boolean` | True when logged in |
 | `isLoading` | `boolean` | True during any auth op (restore, login, refresh, logout). Initialized to `true` on first render when `initialRefreshToken` is present, so `!isLoading && !isAuthenticated` safely means "user is logged out" without a false-positive flash on reload. |
 | `isRestoring` | `boolean` | True only while the initial-mount session restoration is in flight. Becomes false after the restore settles; does not flip true again later. Use this to distinguish a page-reload session check from an interactive login. |
@@ -221,26 +220,47 @@ GUB-side token-exchange endpoint, not a runtime SDK escape hatch.
 ```ts
 import { gub } from './gub'
 
-// Verify JWT — attaches req.gub = { user, appPermission }
+// Verify JWT — attaches req.gub = { user }
 app.use(gub.middleware())
+```
 
-// Role-gated routes
-app.get('/api/reports',    gub.requireRole('viewer'),      handler)
-app.post('/api/campaigns', gub.requireRole('contributor'), handler)
-app.delete('/api/data',    gub.requireRole('admin'),       handler)
+GUB's middleware verifies the token and exposes the authenticated user.
+**App-level role/permission gating is your app's job**, not GUB's.
+Sketch: keep your own roles in your own DB (or a config file), and
+write a thin middleware that checks them against `req.gub.user.email`
+or `req.gub.user.sub`:
+
+```ts
+// your-app's authorize.ts
+import type { Request, Response, NextFunction } from 'express'
+
+const ADMIN_EMAILS = new Set(['alice@yourcompany.com', 'bob@yourcompany.com'])
+
+export function requireAdmin(req: Request, res: Response, next: NextFunction) {
+  // GUB's req.gub.user.isAdmin is platform-level (org-data access on GUB).
+  // Define your own per-app admin set for app-level decisions.
+  if (!ADMIN_EMAILS.has(req.gub.user.email)) {
+    res.status(403).json({ error: 'Admin only' })
+    return
+  }
+  next()
+}
+
+app.delete('/api/data', gub.middleware(), requireAdmin, handler)
 ```
 
 ### 3. Access user context in a route handler
 
 ```ts
 app.get('/api/me', gub.middleware(), (req, res) => {
-  const { user, appPermission } = req.gub
+  const { user } = req.gub
 
   res.json({
-    userId:    user.sub,
-    email:     user.email,
-    isAdmin:   user.isAdmin,
-    role:      appPermission?.role ?? 'none',
+    userId:  user.sub,
+    email:   user.email,
+    // user.isAdmin is GUB's superuser flag — bypasses GUB's org-data
+    // access_grants. NOT a per-app role; define those yourself.
+    isAdmin: user.isAdmin,
   })
 })
 ```
@@ -358,20 +378,20 @@ declare global {
 
 ---
 
-## Roles
+## Roles — your app's responsibility
 
-Roles are assigned per-user per-app in the GUB database via `grantAccountAccess()`.
-`isAdmin` users bypass all role checks automatically.
+GUB no longer carries per-app roles in tokens. App-level role/permission
+hierarchies belong in each consuming app, where the rules can be specific
+to that app's domain (Editor vs. Viewer for a CMS, Tier 1 vs. Tier 2 for
+a customer support tool, etc.).
 
-| Role | Intended for |
-|---|---|
-| `viewer` | Read-only access |
-| `contributor` | Read + write |
-| `manager` | Read + write + manage access |
-| `admin` | Full access |
+The JWT exposes:
+- `user.sub`, `user.email`, `user.displayName` — identity
+- `user.isAdmin` — GUB's platform-wide superuser flag, useful for
+  bypassing GUB's org-data access checks. **Not** a per-app role.
 
-`requireRole('viewer')` allows viewer and above.
-`requireRole('manager')` allows manager and admin only.
+Your app decides what to do with that identity. A common pattern is a
+thin middleware that consults your own DB (see "Protect routes" above).
 
 ---
 
@@ -439,10 +459,16 @@ The new shape is two env vars + one shared config file (see "Configuration — o
 
 ### What stays the same
 
-- The `useGUB()` hook contract is unchanged (`user`, `login`, `logout`, `fetch`, `accessToken`, `isLoading`, `isRestoring`, `isAuthenticated`).
-- `gub.middleware()`, `gub.requireRole()`, and `gub.org()` are unchanged.
+- The `useGUB()` hook contract for `user`, `login`, `logout`, `fetch`, `accessToken`, `isLoading`, `isRestoring`, `isAuthenticated`.
+- `gub.middleware()` and `gub.org()` are unchanged.
 - JWT signing keys, JWKS endpoint, refresh-token flow.
 - The `/auth/google/exchange` request contract on the wire.
+
+### What's removed (separate from this proposal — see [remove-app-access-gating](remove-app-access-gating.md))
+
+- `gub.requireRole()` middleware. App-level role gating now belongs in your own app.
+- `appPermission` field on `req.gub`. Same reason.
+- `user.permissions[]` on `useGUB()`. Same reason.
 
 ### Deprecation timeline
 

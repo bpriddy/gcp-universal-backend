@@ -6,28 +6,32 @@ import {
   revokeRefreshToken,
   revokeAllUserTokens,
 } from '../../services/token.service';
-import {
-  findOrCreateUser,
-  checkOrProvisionAppAccess,
-  getUserWithPermissions,
-} from '../../services/user.service';
-import {
-  AccountDisabledError,
-  type AuthResponse,
-  type PendingApprovalResponse,
-} from './auth.types';
+import { findOrCreateUser, getUserIdentity } from '../../services/user.service';
+import { AccountDisabledError, type AuthResponse } from './auth.types';
 import { config } from '../../config/env';
 import { logger } from '../../services/logger';
 
-export type GoogleLoginResult = AuthResponse | PendingApprovalResponse;
-
+/**
+ * Google login flow:
+ *   1. Verify the Google ID token (with strict same-row pairing of
+ *      origin + audience against trusted_apps).
+ *   2. Resolve / JIT-provision the GUB user identity.
+ *   3. Reject disabled accounts.
+ *   4. Issue access + refresh tokens, binding the access token's
+ *      audience to the consuming app's appId.
+ *
+ * Note (2026-05-04): the per-app access gate (user_app_permissions
+ * lookup, pending_approval branch) was removed. App-level "can this
+ * user use my app?" decisions belong to each consuming app, not GUB.
+ * See docs/proposals/remove-app-access-gating.md.
+ */
 export async function googleLogin(
   idToken: string,
   ipAddress: string | undefined,
   userAgent: string | undefined,
   appId?: string,
   origin?: string,
-): Promise<GoogleLoginResult> {
+): Promise<AuthResponse> {
   // 1. Verify token with Google — throws GoogleAuthError if invalid.
   //    Passing origin opts into strict same-row pairing (origin + token
   //    aud must both appear on the SAME trusted_apps row). For browser
@@ -45,29 +49,16 @@ export async function googleLogin(
     throw new AccountDisabledError();
   }
 
-  // 4. App-level access check — only when the client identifies itself
-  if (appId) {
-    const access = await checkOrProvisionAppAccess(user.id, appId, user.isAdmin);
+  // 4. Sign access token with RS256. Bind audience to appId so the
+  //    consumer's SDK verifier accepts it (it expects aud === gub.appId).
+  //    JWT_AUDIENCE is also added so GUB's own /org/* endpoints accept
+  //    the same token when the consumer's backend calls back through.
+  const accessToken = await signAccessToken(
+    { id: user.id, email: user.email, displayName: user.displayName, isAdmin: user.isAdmin },
+    appId ? { appId } : {},
+  );
 
-    if (access === 'pending') {
-      logger.info(
-        { userId: user.id, email: user.email, appId },
-        'User login held at pending_approval for app',
-      );
-      return { status: 'pending_approval', userId: user.id, appId };
-    }
-  }
-
-  // 5. Sign access token with RS256
-  const accessToken = await signAccessToken({
-    id:          user.id,
-    email:       user.email,
-    displayName: user.displayName,
-    isAdmin:     user.isAdmin,
-    permissions: user.permissions,
-  });
-
-  // 6. Issue opaque refresh token
+  // 5. Issue opaque refresh token
   const { rawToken: refreshToken } = await issueInitialRefreshToken(user.id, ipAddress, userAgent);
 
   logger.info({ userId: user.id, email: user.email, appId }, 'User logged in via Google OAuth');
@@ -97,7 +88,7 @@ export async function refreshTokens(
     userAgent,
   );
 
-  const user = await getUserWithPermissions(uid);
+  const user = await getUserIdentity(uid);
 
   if (!user) throw new AccountDisabledError();
 
@@ -106,12 +97,17 @@ export async function refreshTokens(
     throw new AccountDisabledError();
   }
 
+  // Refresh issues tokens without re-binding audience to a per-app value.
+  // The original access token's appId binding doesn't survive refresh;
+  // consumers should detect 401 from their backend and trigger a fresh
+  // login if the audience must remain bound. (Most consumers won't
+  // notice — the JWT_AUDIENCE-only audience is still accepted by GUB,
+  // and the refresh path is server-to-server, not consumer-facing.)
   const accessToken = await signAccessToken({
     id:          user.id,
     email:       user.email,
     displayName: user.displayName,
     isAdmin:     user.isAdmin,
-    permissions: user.permissions,
   });
 
   return {
@@ -141,7 +137,7 @@ export async function exchangeGoogleAccessToken(
   ipAddress: string | undefined,
   userAgent: string | undefined,
   appId?: string,
-): Promise<GoogleLoginResult> {
+): Promise<AuthResponse> {
   // Verify by calling Google's userinfo endpoint — this is the standard way to
   // validate an OAuth access token when you don't have an ID token.
   let userInfo: { sub: string; email: string; email_verified?: boolean; name?: string; picture?: string };
@@ -187,21 +183,10 @@ export async function exchangeGoogleAccessToken(
     throw new AccountDisabledError();
   }
 
-  if (appId) {
-    const access = await checkOrProvisionAppAccess(user.id, appId, user.isAdmin);
-    if (access === 'pending') {
-      logger.info({ userId: user.id, email: user.email, appId }, 'User held at pending_approval (access token exchange)');
-      return { status: 'pending_approval', userId: user.id, appId };
-    }
-  }
-
-  const accessTokenJwt = await signAccessToken({
-    id:          user.id,
-    email:       user.email,
-    displayName: user.displayName,
-    isAdmin:     user.isAdmin,
-    permissions: user.permissions,
-  });
+  const accessTokenJwt = await signAccessToken(
+    { id: user.id, email: user.email, displayName: user.displayName, isAdmin: user.isAdmin },
+    appId ? { appId } : {},
+  );
 
   const { rawToken: refreshToken } = await issueInitialRefreshToken(user.id, ipAddress, userAgent);
 

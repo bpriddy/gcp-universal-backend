@@ -1,16 +1,23 @@
 import { prisma } from '../config/database';
 import type { GoogleTokenPayload } from './google.service';
-import type { TokenPermission } from '../types/jwt';
 import { logger } from './logger';
 
-export interface UserWithPermissions {
+/**
+ * Resolved GUB user identity.
+ *
+ * Note (2026-05-04): the `permissions` field used to live here, sourced
+ * from the `user_app_permissions` table. That table and the per-app gate
+ * it enabled were removed; consuming apps now make their own
+ * authorization decisions on top of the JWT identity claims. See
+ * docs/proposals/remove-app-access-gating.md.
+ */
+export interface UserIdentity {
   id: string;
   email: string;
   displayName: string | null;
   avatarUrl: string | null;
   isActive: boolean;
   isAdmin: boolean;
-  permissions: TokenPermission[];
 }
 
 // ── Identity resolution ───────────────────────────────────────────────────────
@@ -24,7 +31,7 @@ export interface UserWithPermissions {
 //     Claim the stub by writing googleSub and write an audit log entry
 //     so there is a record of when the stub was first activated.
 //
-//  3. Nothing found — JIT provision a new user with zero permissions.
+//  3. Nothing found — JIT provision a new user.
 //
 // Security note: if a record is found by email but already has a DIFFERENT
 // googleSub, it is not merged.  The incoming login is treated as a new user.
@@ -32,11 +39,10 @@ export interface UserWithPermissions {
 
 export async function findOrCreateUser(
   googlePayload: GoogleTokenPayload,
-): Promise<UserWithPermissions> {
+): Promise<UserIdentity> {
   // ── Step 1: find by googleSub ─────────────────────────────────────────────
   const byGoogleSub = await prisma.user.findUnique({
     where: { googleSub: googlePayload.sub },
-    include: { permissions: true },
   });
 
   if (byGoogleSub) {
@@ -56,13 +62,12 @@ export async function findOrCreateUser(
       });
     }
 
-    return toUserWithPermissions(byGoogleSub, googlePayload);
+    return toUserIdentity(byGoogleSub, googlePayload);
   }
 
   // ── Step 2: find pre-created stub by email ────────────────────────────────
   const stub = await prisma.user.findFirst({
     where: { email: googlePayload.email, googleSub: null },
-    include: { permissions: true },
   });
 
   if (stub) {
@@ -86,7 +91,7 @@ export async function findOrCreateUser(
     // log only.  If the stub is linked to a staff record, the staff's audit
     // history will reflect subsequent access grant activity.
 
-    return toUserWithPermissions(stub, googlePayload);
+    return toUserIdentity(stub, googlePayload);
   }
 
   // ── Step 3: JIT provision a new user ─────────────────────────────────────
@@ -100,58 +105,13 @@ export async function findOrCreateUser(
       avatarUrl:   googlePayload.picture ?? null,
       isActive:    true,
     },
-    include: { permissions: true },
   });
 
-  return toUserWithPermissions(created, googlePayload);
+  return toUserIdentity(created, googlePayload);
 }
 
-// ── App access provisioning ───────────────────────────────────────────────────
-//
-// Called after identity resolution when the login request includes an appId.
-// Returns 'granted' if the user may proceed, 'pending' if they need approval.
-//
-// Admins bypass the check entirely.
-
-export async function checkOrProvisionAppAccess(
-  userId: string,
-  appId: string,
-  isAdmin: boolean,
-): Promise<'granted' | 'pending'> {
-  if (isAdmin) return 'granted';
-
-  const existing = await prisma.userAppPermission.findUnique({
-    where: { userId_appId: { userId, appId } },
-  });
-
-  if (existing) return 'granted';
-
-  // No permission — check the app's autoAccess setting
-  const app = await prisma.app.findUnique({
-    where: { appId },
-    select: { autoAccess: true, isActive: true },
-  });
-
-  if (!app || !app.isActive) return 'pending';
-
-  if (app.autoAccess) {
-    await prisma.userAppPermission.create({
-      data: { userId, appId, role: 'viewer' },
-    });
-    return 'granted';
-  }
-
-  return 'pending';
-}
-
-export async function getUserWithPermissions(
-  userId: string,
-): Promise<UserWithPermissions | null> {
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    include: { permissions: true },
-  });
-
+export async function getUserIdentity(userId: string): Promise<UserIdentity | null> {
+  const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) return null;
 
   return {
@@ -161,16 +121,15 @@ export async function getUserWithPermissions(
     avatarUrl:   user.avatarUrl,
     isActive:    user.isActive,
     isAdmin:     user.isAdmin,
-    permissions: user.permissions.map((p) => ({ appId: p.appId, role: p.role })),
   };
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
-function toUserWithPermissions(
-  user: { id: string; email: string; displayName: string | null; avatarUrl: string | null; isActive: boolean; isAdmin: boolean; permissions: { appId: string; role: string }[] },
+function toUserIdentity(
+  user: { id: string; email: string; displayName: string | null; avatarUrl: string | null; isActive: boolean; isAdmin: boolean },
   googlePayload: GoogleTokenPayload,
-): UserWithPermissions {
+): UserIdentity {
   return {
     id:          user.id,
     email:       googlePayload.email,
@@ -178,6 +137,5 @@ function toUserWithPermissions(
     avatarUrl:   googlePayload.picture ?? user.avatarUrl,
     isActive:    user.isActive,
     isAdmin:     user.isAdmin,
-    permissions: user.permissions.map((p) => ({ appId: p.appId, role: p.role })),
   };
 }

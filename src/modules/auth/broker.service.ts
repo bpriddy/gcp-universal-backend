@@ -20,10 +20,7 @@ import { OAuth2Client } from 'google-auth-library';
 import { prisma } from '../../config/database';
 import { config } from '../../config/env';
 import { logger } from '../../services/logger';
-import {
-  findOrCreateUser,
-  getUserWithPermissions,
-} from '../../services/user.service';
+import { findOrCreateUser, getUserIdentity } from '../../services/user.service';
 import { signAccessToken } from '../../services/jwt.service';
 import {
   issueInitialRefreshToken,
@@ -299,16 +296,16 @@ export async function exchangeAuthCode(input: TokenInput): Promise<AuthResponse>
     data: { usedAt: new Date() },
   });
 
-  // Build GUB session — fetch user with permissions for JWT signing
-  const userWithPerms = await getUserWithPermissions(record.userId);
-  if (!userWithPerms) {
+  // Build GUB session — fetch user identity for JWT signing
+  const userIdentity = await getUserIdentity(record.userId);
+  if (!userIdentity) {
     throw new BrokerError('USER_NOT_FOUND', 'User associated with this code no longer exists', 400);
   }
-  if (!userWithPerms.isActive) {
+  if (!userIdentity.isActive) {
     throw new BrokerError('ACCOUNT_DISABLED', 'This account has been disabled', 403);
   }
 
-  const accessToken = await signAccessToken(userWithPerms);
+  const accessToken = await signAccessToken(userIdentity);
   const { rawToken: refreshToken } = await issueInitialRefreshToken(
     record.userId,
     input.ipAddress ?? undefined,
@@ -321,10 +318,10 @@ export async function exchangeAuthCode(input: TokenInput): Promise<AuthResponse>
     expiresIn: config.JWT_ACCESS_TOKEN_TTL,
     tokenType: 'Bearer',
     user: {
-      id: userWithPerms.id,
-      email: userWithPerms.email,
-      displayName: userWithPerms.displayName,
-      avatarUrl: userWithPerms.avatarUrl,
+      id: userIdentity.id,
+      email: userIdentity.email,
+      displayName: userIdentity.displayName,
+      avatarUrl: userIdentity.avatarUrl,
     },
   };
 }

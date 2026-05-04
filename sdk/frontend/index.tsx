@@ -42,21 +42,23 @@ export type { GUBConfig, GUBConfigInput };
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
-export interface TokenPermission {
-  appId: string;
-  dbIdentifier: string;
-  role: string;
-}
-
+/**
+ * Authenticated GUB user — identity claims from the JWT.
+ *
+ * Note (2026-05-04): the `permissions` field was removed. App-level "can
+ * this user use this app?" decisions belong to each consuming app, not
+ * GUB. Implementers needing role/permission gating should source those
+ * from their own backend on top of the JWT identity claims. See
+ * docs/proposals/remove-app-access-gating.md.
+ */
 export interface GUBUser {
   /** User UUID — users.id in GUB */
   sub: string;
   email: string;
   displayName: string | null;
   avatarUrl: string | null;
-  /** Superuser flag — bypasses all access_grants checks on GUB */
+  /** Superuser flag — bypasses all access_grants checks on GUB's own org-data API */
   isAdmin: boolean;
-  permissions: TokenPermission[];
   exp: number;
 }
 
@@ -72,44 +74,12 @@ export interface LegacyGUBConfig {
   googleClientId: string;
 }
 
-// ── /auth/google/exchange response shapes ──────────────────────────────────
-// GUB returns one of two bodies depending on whether the authenticated user
-// has an access_grant for the requested appId. The SDK detects which one
-// and surfaces pending_approval as a typed error rather than crashing on a
-// missing token.
-
 interface TokenBody {
   accessToken: string;
   refreshToken: string;
   expiresIn: number;
   tokenType: string;
   user: { id: string; email: string; displayName: string | null; avatarUrl: string | null };
-}
-
-interface PendingApprovalBody {
-  status: 'pending_approval';
-  userId: string;
-  appId: string;
-}
-
-/**
- * Thrown by `login()` when GUB authenticated the user but they lack an
- * access_grant for the configured `appId`. Catch and check `code` to
- * route to a "your access is pending approval" page.
- *
- * @example
- *   try { login(); } catch (err) {
- *     if ((err as GUBPendingApprovalError).code === 'PENDING_APPROVAL') {
- *       router.push('/pending-approval');
- *       return;
- *     }
- *     throw err;
- *   }
- */
-export interface GUBPendingApprovalError extends Error {
-  code: 'PENDING_APPROVAL';
-  userId: string;
-  appId: string;
 }
 
 export interface GUBContextValue {
@@ -347,37 +317,18 @@ export function GUBProvider({ config, children, initialRefreshToken, onTokensCha
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           // GUB expects idToken — the GIS credential IS an ID token.
-          // appId scopes the exchange to this app's permissions and
-          // gets stamped into the issued JWT's `aud` claim.
+          // appId is forwarded so GUB can bind the issued JWT's `aud`
+          // claim to this app's identifier. GUB no longer gates per-app
+          // access; the appId is purely an audience binding so each
+          // consumer's verifier can confirm tokens were issued for
+          // them specifically.
           body: JSON.stringify({ idToken: credential, appId: gub.appId }),
         });
         if (!res.ok) {
           const err = await res.json().catch(() => ({})) as { message?: string };
           throw new Error(err.message ?? 'Authentication failed');
         }
-        const data = await res.json() as PendingApprovalBody | TokenBody;
-
-        // GUB returns 202 + { status: 'pending_approval', userId, appId }
-        // when the user authenticated successfully but doesn't have an
-        // access_grant for this app yet. Surface as a typed error the
-        // consumer's login flow can detect and route on (e.g. show a
-        // "your access is pending" page) rather than crashing on a
-        // missing accessToken.
-        if ('status' in data && data.status === 'pending_approval') {
-          const err: GUBPendingApprovalError = Object.assign(
-            new Error('Account is pending approval for this app.'),
-            { code: 'PENDING_APPROVAL' as const, userId: data.userId, appId: data.appId },
-          );
-          throw err;
-        }
-
-        if (!('accessToken' in data) || !data.accessToken || !data.refreshToken) {
-          throw new Error(
-            'GUB exchange succeeded but the response is missing access/refresh tokens. ' +
-              'This is unexpected — check that GUB and the SDK are on compatible versions.',
-          );
-        }
-
+        const data = await res.json() as TokenBody;
         storeTokens(data.accessToken, data.refreshToken);
       } finally {
         setIsLoading(false);

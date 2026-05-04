@@ -139,23 +139,6 @@ router.post('/access-requests', orgController.createAccessRequest);
  */
 router.get('/access-requests', orgController.listMyAccessRequests);
 
-// ── App access requests ────────────────────────────────────────────────────
-
-/**
- * POST /org/app-access-requests
- * Submit a request to access a gated app.
- * Body: { appId, reason? }
- * Returns 201 with the request (or existing pending request).
- * Returns 409 if the user already has an approved UserAppPermission.
- */
-router.post('/app-access-requests', orgController.createAppAccessRequest);
-
-/**
- * GET /org/app-access-requests
- * List the calling user's own app access requests (most recent first).
- */
-router.get('/app-access-requests', orgController.listMyAppAccessRequests);
-
 // ── Staff metadata ─────────────────────────────────────────────────────────
 
 /**
