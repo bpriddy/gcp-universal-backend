@@ -57,25 +57,46 @@ npm install github:bpriddy/gcp-universal-backend @react-oauth/google
 npm install github:bpriddy/gcp-universal-backend jose
 ```
 
+### Configuration — one declaration, frontend + backend
+
+Two env vars + one code constant. Don't repeat `GUB_URL` under multiple
+prefixes; the helper resolves what's available.
+
+```env
+GUB_URL=https://gub.yourdomain.com
+GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
+```
+
+```ts
+// gub.config.ts — keep in shared code if frontend + backend are separate packages
+import { defineGUBConfig } from 'gcp-universal-backend/sdk/config'
+
+export const GUB = defineGUBConfig({
+  url:            process.env.GUB_URL!,
+  googleClientId: process.env.GOOGLE_CLIENT_ID!,
+  appId:          'your-app-id',  // identity, not config — same in dev/staging/prod
+})
+```
+
+`appId` is what GUB stamps into the JWT `aud` claim and what your SDK
+verifier expects back. There is no `GUB_ISSUER` / `GUB_AUDIENCE` env var —
+both come from GUB's `/.well-known/oauth-authorization-server` discovery
+doc, which the helper fetches and validates on first use.
+
 ### Frontend (React)
 
 ```tsx
-import { GUBProvider, useGUB } from 'gcp-universal-backend/frontend'
+import { GUBProvider, useGUB } from 'gcp-universal-backend/sdk/frontend'
+import { GUB } from './gub.config'
 
-// 1. Wrap your app
 export default function App() {
   return (
-    <GUBProvider config={{
-      gubUrl: 'https://gub.yourdomain.com',
-      googleClientId: 'your-client-id.apps.googleusercontent.com',
-      appId: 'your-app-id',
-    }}>
+    <GUBProvider config={GUB}>
       <YourApp />
     </GUBProvider>
   )
 }
 
-// 2. Use anywhere inside the provider
 function Dashboard() {
   const { isAuthenticated, login, logout, user, fetch } = useGUB()
 
@@ -88,21 +109,20 @@ function Dashboard() {
 ### Backend (Node)
 
 ```ts
-import { createGUBClient } from 'gcp-universal-backend/backend'
+import { createGUBClient } from 'gcp-universal-backend/sdk/backend'
+import { GUB } from './gub.config'
 
-const gub = createGUBClient({
-  gubUrl: process.env.GUB_URL,
-  issuer: process.env.GUB_ISSUER,
-  audience: process.env.GUB_AUDIENCE,
-})
+export const gub = createGUBClient(GUB)
 
-// Protect routes
+// Verify the JWT and attach req.gub.user (no permissions, no roles)
 app.use(gub.middleware())
-app.get('/reports',   gub.requireRole('viewer'),      handler)
-app.post('/campaigns', gub.requireRole('contributor'), handler)
+
+// Per-app role gating is YOUR app's responsibility, not GUB's. Write
+// your own thin middleware on top of req.gub.user — see sdk/USAGE.md
+// for the pattern.
 
 // Access user in a handler
-app.get('/me', gub.middleware(), (req, res) => {
+app.get('/me', (req, res) => {
   res.json({ email: req.gub.user.email })
 })
 
@@ -117,6 +137,16 @@ const [accounts, campaigns, offices, teams, staff] = await Promise.all([
   org.listStaff(),                             // gated by staff_* grants
 ])
 ```
+
+### What GUB does and doesn't do
+
+GUB's role is intentionally narrow:
+
+- **Auth** — Google OAuth → RS256 JWT, signed by a key in Secret Manager. Tokens carry identity (`sub`, `email`, `displayName`, `isAdmin`) and nothing else.
+- **Org data** — accounts, campaigns, staff, teams, offices, with per-resource access via `access_grants`.
+- **Trust registry** — which Google client_ids and origins are allowed to obtain tokens (`trusted_apps`).
+
+GUB **does not** decide whether a user can use your app, what role they have within your app, or what features they can access. Those are app-level decisions and live in your app, where you can model them against your own domain. See `docs/proposals/remove-app-access-gating.md` for the architectural reasoning.
 
 ### Full usage guide
 
@@ -222,13 +252,21 @@ gcp-universal-backend/
 
 ## Database schema
 
-Three tables in the auth PostgreSQL database:
+Auth-relevant tables in the GUB database:
 
 | Table | Purpose |
 |---|---|
 | `users` | Google-authenticated users (`google_sub` is the stable identifier) |
-| `user_app_permissions` | Maps a user → `appId` + `dbIdentifier` + `role` |
 | `refresh_tokens` | Hashed refresh tokens with rotation family tracking |
+| `apps` | Thin registry of known appIds → friendly names. Not a gate; consuming apps make their own access decisions. |
+| `trusted_apps` | Origin + Google client_id pairs that may obtain tokens. Strict same-row pairing. Source of truth for both CORS and audience verification. |
+| `access_grants` | Per-resource access to GUB-owned org data (account / campaign / staff / team / office). Checked at `/org/*` endpoints. |
+| `oauth_clients` | Server-side OAuth Agent Clients for the broker flow (separate from end-user OAuth). |
+
+Two access systems, intentionally separate:
+
+- **`access_grants`** is *resource-level*: "can this user see this account / campaign / staff?" Checked at GUB's `/org/*` endpoints because the resources live on GUB.
+- App-level decisions ("can this user use *my app at all*?") are **not** centralized at GUB. Each consuming app makes that call against its own data with its own logic. See `docs/proposals/remove-app-access-gating.md`.
 
 Application databases (defined in `APP_DB_CONNECTIONS`) are separate PostgreSQL instances owned by each downstream app. This service holds connection pools for them but does not manage their schemas.
 
@@ -390,26 +428,33 @@ A reference React + Vite frontend lives in `frontend/`. It demonstrates the comp
 
 ```bash
 cd frontend
-cp .env.example .env    # set VITE_GOOGLE_CLIENT_ID
+cp .env.example .env    # set VITE_GUB_URL + VITE_GOOGLE_CLIENT_ID
 npm install
 npm run dev             # http://localhost:5173 — proxies /auth and /api to :3000
 ```
 
 ---
 
-## Adding a user permission
+## Granting access
 
-New users are JIT-provisioned on first login with zero permissions. Grant access via direct SQL or a future admin API:
+New users are JIT-provisioned on first login. GUB's grant model is split
+across two distinct surfaces, each answering a different question:
 
-```sql
-INSERT INTO user_app_permissions (user_id, app_id, db_identifier, role)
-VALUES (
-  (SELECT id FROM users WHERE email = 'user@example.com'),
-  'analytics',      -- appId the frontend passes
-  'analytics',      -- key in APP_DB_CONNECTIONS
-  'editor'
-);
-```
+**Per-resource access to org data** (accounts, campaigns, staff, teams,
+offices). Granted via `access_grants` rows in the GUB DB; managed in
+gub-admin → Access Grants. Required to see anything from `/org/*` as a
+non-admin. The `isAdmin` flag on `users` bypasses these checks.
+
+**Per-app access** is **not GUB's concern**. Each consuming app decides
+who can use it on their own terms — typically a roles table in their
+own DB or a check on `req.gub.user.email`. See `sdk/USAGE.md` for the
+recommended pattern. Trying to centralize this in GUB was a tried-and-
+removed anti-pattern; see `docs/proposals/remove-app-access-gating.md`.
+
+**Trusted apps registry** (origin + Google client_id) determines which
+apps can obtain tokens at all. Managed in gub-admin → Settings →
+Trusted apps. Strict same-row pairing of origin and client_id —
+derivative environments do not inherit trust.
 
 ---
 
