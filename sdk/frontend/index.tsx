@@ -352,7 +352,11 @@ export function GUBProvider({ config, children, initialRefreshToken, onTokensCha
       const res = await window.fetch(`${baseUrl}/auth/refresh`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refreshToken: _refreshToken }),
+        // Forward appId so the refreshed access token re-binds its
+        // audience to this app — without it, the new token would carry
+        // only JWT_AUDIENCE and fail this SDK's `aud === gub.appId`
+        // verifier check on the very next request.
+        body: JSON.stringify({ refreshToken: _refreshToken, appId: gub.appId }),
       });
       if (!res.ok) {
         // Refresh token expired or revoked — clear session
@@ -507,7 +511,9 @@ export function GUBProvider({ config, children, initialRefreshToken, onTokensCha
         const res = await window.fetch(`${baseUrl}/auth/refresh`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ refreshToken: initialRefreshToken }),
+          // Forward appId so the restored access token re-binds its
+          // audience to this app. See silentRefresh for the rationale.
+          body: JSON.stringify({ refreshToken: initialRefreshToken, appId: gub.appId }),
         });
         if (res.ok) {
           const data = await res.json();

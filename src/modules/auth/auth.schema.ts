@@ -17,6 +17,13 @@ export const RefreshSchema = z.object({
     .string()
     .min(1, 'refreshToken is required')
     .max(512, 'refreshToken is too long'),
+  // Optional appId carried through to the refreshed access token's
+  // audience claim. The SDK's silent-refresh path sends this so the
+  // audience binding established at login (aud=[appId, JWT_AUDIENCE])
+  // survives refresh. Without it, the refreshed token would only
+  // carry JWT_AUDIENCE and fail the consumer's `aud === gub.appId`
+  // verifier check on the next backend call.
+  appId: z.string().min(1).optional(),
 });
 
 export const LogoutSchema = z.object({

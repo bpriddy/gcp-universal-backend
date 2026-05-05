@@ -47,6 +47,7 @@ export async function refreshTokens(
       req.body.refreshToken,
       getClientIp(req),
       getUserAgent(req),
+      req.body.appId,
     );
     res.status(200).json(result);
   } catch (err) {
