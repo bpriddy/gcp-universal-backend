@@ -24,7 +24,7 @@
  * Migration: see sdk/USAGE.md "Migrating from <0.x>".
  */
 
-import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from 'jose';
+import { createRemoteJWKSet, errors as joseErrors, jwtVerify, type JWTVerifyGetKey } from 'jose';
 import { defineGUBConfig, type GUBConfig, type GUBConfigInput } from '../config';
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -191,6 +191,95 @@ export interface GUBUserRecord {
   updatedAt: string;
 }
 
+// ── Verification error classification ─────────────────────────────────────
+
+/**
+ * Map a verifyToken failure to a structured response. The point is to
+ * preserve jose's typed errors instead of flattening every failure to a
+ * generic "INVALID_TOKEN" — consumers (and platform observability) can
+ * then tell user-recoverable failures (expired token, refresh fixes it)
+ * apart from real attack signals (signature mismatch) apart from
+ * availability issues (JWKS fetch timeout).
+ *
+ * Codes mirror RFC 7519 / 7515 vocabulary where there's a clean fit, and
+ * fall back to 'INVALID_TOKEN' for anything we don't recognize. Status
+ * is always 401 today; that may evolve (e.g. JWKS_FETCH_TIMEOUT could
+ * arguably be 503).
+ */
+interface VerifyErrorClassification {
+  code: string;
+  status: number;
+  message: string;
+}
+
+function classifyVerifyError(err: unknown): VerifyErrorClassification {
+  const message = err instanceof Error ? err.message : 'Invalid token';
+
+  if (err instanceof joseErrors.JWTExpired) {
+    // User-recoverable: a fresh token from refresh will work. The SDK
+    // frontend's silent refresh handles this automatically; consumers
+    // who roll their own auth can branch on this code.
+    return { code: 'TOKEN_EXPIRED', status: 401, message };
+  }
+
+  if (err instanceof joseErrors.JWTClaimValidationFailed) {
+    // Issuer mismatch (wrong GUB instance), audience mismatch (config
+    // drift between frontend and backend appId), or some other claim
+    // check failed. The `claim` and `reason` fields on the jose error
+    // pinpoint which one. Distinct from signature failure, which is a
+    // genuine attack signal.
+    const claim = (err as { claim?: string }).claim;
+    return {
+      code: 'CLAIM_INVALID',
+      status: 401,
+      message: claim ? `Claim '${claim}' validation failed: ${message}` : message,
+    };
+  }
+
+  if (err instanceof joseErrors.JWSSignatureVerificationFailed) {
+    // Signature didn't verify against any key in the JWKS. Either the
+    // token wasn't signed by GUB (forgery attempt) or by a key whose
+    // rotation hasn't reached this consumer's JWKS cache yet. Worth
+    // logging at WARN+ in consuming apps' observability.
+    return { code: 'SIGNATURE_INVALID', status: 401, message };
+  }
+
+  if (err instanceof joseErrors.JWKSNoMatchingKey) {
+    // Token's `kid` doesn't match any key in JWKS. Usually a key
+    // rotation lag — the JWKS cache (10 min) hasn't picked up the new
+    // key yet. Should self-resolve on retry after cache TTL.
+    return { code: 'KEY_NOT_FOUND', status: 401, message };
+  }
+
+  if (err instanceof joseErrors.JWKSTimeout) {
+    // GUB's JWKS endpoint didn't respond. Availability issue at GUB or
+    // the network path. Distinct from a token issue.
+    return { code: 'JWKS_FETCH_TIMEOUT', status: 401, message };
+  }
+
+  if (err instanceof joseErrors.JWTInvalid || err instanceof joseErrors.JWSInvalid) {
+    // Token isn't a syntactically valid JWT/JWS. Almost always a bug
+    // (sending the wrong header, double-Bearer prefix, etc.) rather
+    // than an attack.
+    return { code: 'TOKEN_MALFORMED', status: 401, message };
+  }
+
+  if (err instanceof joseErrors.JOSEError) {
+    // Catch-all for jose errors not specifically handled above
+    // (JOSEAlgNotAllowed, JWKSInvalid, etc.). Surface the jose error
+    // code as our code prefix so triage stays specific.
+    return {
+      code: `JOSE_${(err as { code?: string }).code ?? 'ERROR'}`,
+      status: 401,
+      message,
+    };
+  }
+
+  // Non-jose throw (network failure during JWKS fetch, etc.). Keep
+  // the generic INVALID_TOKEN for backward compatibility.
+  return { code: 'INVALID_TOKEN', status: 401, message };
+}
+
 // ── GUB Client factory ─────────────────────────────────────────────────────
 
 /**
@@ -302,8 +391,12 @@ export function createGUBClient(config: GUBConfig | GUBConfigInput | GUBClientCo
         (req as GUBRequest & { gub: GUBRequestContext }).gub = { user };
         next();
       } catch (err) {
-        const message = err instanceof Error ? err.message : 'Invalid token';
-        res.status(401).json({ code: 'INVALID_TOKEN', error: message });
+        // Preserve jose's typed error so consumers (and observability)
+        // can distinguish recoverable failures (expired token → trigger
+        // refresh) from real signals (signature mismatch → possible
+        // attack) from availability issues (JWKS fetch timeout).
+        const { code, status, message } = classifyVerifyError(err);
+        res.status(status).json({ code, error: message });
       }
     };
   }
