@@ -29,6 +29,79 @@ npm install github:bpriddy/gcp-universal-backend
 
 ---
 
+## Quick start — 5 steps to a working integration
+
+Do these in order. The first time you wire up GUB, skipping a step
+produces an error that's *technically* clear but makes you re-read
+the whole guide. Following them in order avoids that.
+
+**1. Ask the GUB admin to register your app in Trusted Apps.** They
+go to **gub-admin → Settings → Trusted apps** and add a row for your
+app with these two values:
+
+   - `origins`: every URL your frontend will load from. For local dev
+     this is typically `http://localhost:5173` (Vite) or
+     `http://localhost:3000` (Next.js). For deployed envs, the public
+     URL.
+   - `googleClientIds`: your Google OAuth 2.0 client ID, the value from
+     Google Cloud Console → APIs & Services → Credentials, ending in
+     `.apps.googleusercontent.com`.
+
+   Both must be on the **same row**. Strict same-row pairing is
+   intentional: a fork or derivative environment doesn't inherit
+   trust from a parent. See `gcp-universal-backend` README "Trusted
+   apps registry" for the full architecture.
+
+**2. Set two env vars** in your app's deploy config (and `.env.local`
+for dev). Use whichever prefix your build tool requires for the
+frontend variant — `VITE_*`, `NEXT_PUBLIC_*`, `REACT_APP_*`:
+
+   ```env
+   GUB_URL=https://gub-dev.example.com
+   GOOGLE_CLIENT_ID=12345-abc.apps.googleusercontent.com
+   ```
+
+**3. Pick a stable `appId`** for your app and write it into a single
+shared config file. The string is identity, not credential — same
+value across dev/staging/prod, hardcoded in code, not in env. **Put
+this file in shared code** (e.g. a monorepo package both frontend and
+backend import from). If frontend and backend are separate codebases,
+write the same `gub.config.ts` in both — but keep `appId` byte-equal
+on both sides; drift causes confusing audience-mismatch failures.
+
+   ```ts
+   // src/gub.config.ts (or a shared package)
+   import { defineGUBConfig } from 'gcp-universal-backend/sdk/config'
+
+   export const GUB = defineGUBConfig({
+     url:            import.meta.env.VITE_GUB_URL ?? process.env.GUB_URL!,
+     googleClientId: import.meta.env.VITE_GOOGLE_CLIENT_ID
+                       ?? process.env.GOOGLE_CLIENT_ID!,
+     appId:          'workflows-dashboard',  // identity, not config
+   })
+   ```
+
+**4. Wire up the frontend Provider** (see "Frontend — React" below) and
+the **backend client** (see "Backend — Node.js" below). Both import
+`GUB` from the file you just wrote.
+
+**5. Test the login flow end-to-end.** Sign in. Verify the user shows
+up in `useGUB().user`. If you get an error at this step, the body
+will carry a structured `code` field — don't string-match the message.
+Common ones:
+
+   - `ORIGIN_NOT_ALLOWED` → step 1 wasn't done, or the origin in the
+     trusted_apps row doesn't match what the browser sent.
+   - `AUDIENCE_NOT_REGISTERED` → step 1 was done with the origin but
+     not the Google client_id.
+   - `AUDIENCE_ORIGIN_MISMATCH` → both are registered but on different
+     trusted_apps rows. Move them to the same row.
+   - `INVALID_GOOGLE_TOKEN` → re-try sign-in, often a transient.
+
+That's the complete operational onboarding. Code below.
+
+---
+
 ## Configuration — one declaration, used everywhere
 
 GUB uses a single config helper that the frontend and backend both consume.
@@ -193,6 +266,48 @@ won't fire prematurely). The provider signals failure via `onTokensChange(null)`
 Transient network failures during restoration do NOT trigger `onTokensChange(null)` —
 the cookie stays intact, and the next reload tries again.
 
+### Handling login errors
+
+When `login()` fails because GUB rejected the exchange, the SDK throws
+a typed `GUBExchangeError` with the structured response GUB sent. Don't
+string-match `message`; branch on `code`:
+
+```ts
+import { GUBExchangeError } from 'gcp-universal-backend/sdk/frontend'
+
+try {
+  await login()
+} catch (err) {
+  if (err instanceof GUBExchangeError) {
+    switch (err.code) {
+      case 'AUDIENCE_NOT_REGISTERED':
+      case 'AUDIENCE_ORIGIN_MISMATCH':
+      case 'AUDIENCES_REGISTRY_EMPTY':
+      case 'ORIGIN_NOT_ALLOWED':
+        // Operator action required — admin needs to register your app
+        // in trusted_apps. Show a "contact your admin" screen.
+        showAdminContactScreen({ code: err.code, details: err.details })
+        return
+      case 'INVALID_GOOGLE_TOKEN':
+      case 'EMAIL_NOT_VERIFIED':
+        // User-actionable. Prompt to retry or verify their Google account.
+        showGoogleAccountIssueScreen(err.message)
+        return
+      default:
+        // Unknown — probably a transient or a future error code we
+        // haven't taught the SDK about yet. Show the message verbatim.
+        toast.error(err.message)
+        return
+    }
+  }
+  throw err
+}
+```
+
+`err.code`, `err.message`, `err.status` (HTTP status from GUB), and
+`err.details` (structured context, e.g. the rejected audience or origin)
+are all preserved.
+
 ---
 
 ## Backend — Node.js
@@ -248,6 +363,27 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction) {
 
 app.delete('/api/data', gub.middleware(), requireAdmin, handler)
 ```
+
+### Middleware error codes
+
+When `gub.middleware()` rejects a request, it returns 401 with a `code`
+that distinguishes recoverable failures (refresh fixes them) from real
+signals (worth alerting on) from availability issues (transient, retry):
+
+| Code | What it means | Recoverable? |
+|---|---|---|
+| `MISSING_TOKEN` | No `Authorization: Bearer …` header | Yes — caller didn't send a token |
+| `TOKEN_EXPIRED` | Token's `exp` is past. Frontend SDK auto-refreshes; non-SDK callers should refresh | Yes |
+| `CLAIM_INVALID` | Issuer or audience mismatch. Usually appId drift between frontend and backend `gub.config.ts` | No — config bug |
+| `SIGNATURE_INVALID` | Signature didn't verify against any JWKS key. Forgery or pre-rotation token | No — alert worthy |
+| `KEY_NOT_FOUND` | Token's `kid` not in JWKS cache. Usually JWKS rotation lag (10 min cache) | Yes — retry after cache TTL |
+| `JWKS_FETCH_TIMEOUT` | JWKS endpoint didn't respond | Yes — GUB availability issue |
+| `TOKEN_MALFORMED` | Token isn't a valid JWT (wrong header, double-Bearer, etc.) | No — caller bug |
+| `INVALID_TOKEN` | Catch-all for everything else | Maybe |
+
+These are surfaced verbatim in the response body's `code` field.
+Observability tools should alert on `SIGNATURE_INVALID`; the rest are
+either recoverable or expected during normal operation.
 
 ### 3. Access user context in a route handler
 

@@ -82,6 +82,67 @@ interface TokenBody {
   user: { id: string; email: string; displayName: string | null; avatarUrl: string | null };
 }
 
+/**
+ * Thrown by `login()` when GUB rejects the Google ID token exchange.
+ *
+ * Preserves the structured response from GUB so consumers can branch on
+ * `code` rather than string-matching `message`. Common codes:
+ *
+ *   - 'AUDIENCE_NOT_REGISTERED'    — your Google client_id isn't on a
+ *                                    trusted_apps row. Ask GUB admin to
+ *                                    add it.
+ *   - 'AUDIENCE_ORIGIN_MISMATCH'   — your Google client_id IS registered
+ *                                    but not paired with this origin on
+ *                                    the same row. Strict same-row
+ *                                    pairing — register this origin too.
+ *   - 'AUDIENCES_REGISTRY_EMPTY'   — GUB has no trusted apps configured
+ *                                    at all. Wrong environment? Or new
+ *                                    GUB instance not seeded yet.
+ *   - 'INVALID_GOOGLE_TOKEN'       — Google rejected the token (expired,
+ *                                    bad signature, etc.). Re-trying the
+ *                                    sign-in may fix it.
+ *   - 'EMAIL_NOT_VERIFIED'         — Google account email isn't verified.
+ *                                    User has to verify with Google.
+ *   - 'ORIGIN_NOT_ALLOWED'         — coarse origin gate at the CORS
+ *                                    middleware before token verification
+ *                                    even ran. Same fix as
+ *                                    AUDIENCE_NOT_REGISTERED operationally.
+ *   - 'AUTH_FAILED'                — fallback when GUB returns a
+ *                                    non-OK status with no recognizable code.
+ *
+ * @example
+ *   try { login(); }
+ *   catch (err) {
+ *     if (err instanceof GUBExchangeError) {
+ *       if (err.code === 'AUDIENCE_NOT_REGISTERED') {
+ *         showAdminContactScreen();
+ *         return;
+ *       }
+ *       toast.error(err.message);
+ *       return;
+ *     }
+ *     throw err;
+ *   }
+ */
+export class GUBExchangeError extends Error {
+  readonly code: string;
+  readonly details: Record<string, unknown> | undefined;
+  /** HTTP status code GUB returned. Useful for telemetry / log triage. */
+  readonly status: number;
+  constructor(
+    code: string,
+    message: string,
+    status: number,
+    details?: Record<string, unknown>,
+  ) {
+    super(message);
+    this.name = 'GUBExchangeError';
+    this.code = code;
+    this.details = details;
+    this.status = status;
+  }
+}
+
 export interface GUBContextValue {
   /** Authenticated user, or null if not logged in */
   user: GUBUser | null;
@@ -325,8 +386,27 @@ export function GUBProvider({ config, children, initialRefreshToken, onTokensCha
           body: JSON.stringify({ idToken: credential, appId: gub.appId }),
         });
         if (!res.ok) {
-          const err = await res.json().catch(() => ({})) as { message?: string };
-          throw new Error(err.message ?? 'Authentication failed');
+          // Preserve GUB's structured error so consumers can branch on
+          // `code` instead of string-matching `message`. GUB's response
+          // shape: { code, message, details? }. Falls back to AUTH_FAILED
+          // if the body wasn't parseable JSON or didn't carry a code
+          // (e.g. a generic gateway 5xx).
+          const body = await res.json().catch(() => ({})) as {
+            code?: unknown;
+            message?: unknown;
+            error?: unknown;
+            details?: unknown;
+          };
+          throw new GUBExchangeError(
+            typeof body.code === 'string' ? body.code : 'AUTH_FAILED',
+            typeof body.message === 'string'
+              ? body.message
+              : (typeof body.error === 'string' ? body.error : 'Authentication failed'),
+            res.status,
+            body.details && typeof body.details === 'object'
+              ? (body.details as Record<string, unknown>)
+              : undefined,
+          );
         }
         const data = await res.json() as TokenBody;
         storeTokens(data.accessToken, data.refreshToken);
