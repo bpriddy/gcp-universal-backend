@@ -81,6 +81,7 @@ export async function refreshTokens(
   rawRefreshToken: string,
   ipAddress: string | undefined,
   userAgent: string | undefined,
+  appId?: string,
 ): Promise<AuthResponse> {
   const { rawToken: newRefreshToken, userId: uid } = await rotateRefreshToken(
     rawRefreshToken,
@@ -97,18 +98,21 @@ export async function refreshTokens(
     throw new AccountDisabledError();
   }
 
-  // Refresh issues tokens without re-binding audience to a per-app value.
-  // The original access token's appId binding doesn't survive refresh;
-  // consumers should detect 401 from their backend and trigger a fresh
-  // login if the audience must remain bound. (Most consumers won't
-  // notice — the JWT_AUDIENCE-only audience is still accepted by GUB,
-  // and the refresh path is server-to-server, not consumer-facing.)
-  const accessToken = await signAccessToken({
-    id:          user.id,
-    email:       user.email,
-    displayName: user.displayName,
-    isAdmin:     user.isAdmin,
-  });
+  // Refresh re-binds the access token's audience to `appId` when the
+  // SDK passes one — same shape as login (aud = [appId, JWT_AUDIENCE]
+  // multi-audience). Without this, the refreshed token would carry
+  // only JWT_AUDIENCE and fail the consumer's verifier (which checks
+  // `aud === gub.appId`), turning silent refresh into a forced
+  // re-login every ~14 minutes.
+  const accessToken = await signAccessToken(
+    {
+      id:          user.id,
+      email:       user.email,
+      displayName: user.displayName,
+      isAdmin:     user.isAdmin,
+    },
+    appId ? { appId } : {},
+  );
 
   return {
     accessToken,
