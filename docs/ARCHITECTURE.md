@@ -103,10 +103,10 @@ database. Protected by Google Cloud IAP (Identity-Aware Proxy).
 
 **Key responsibilities:**
 - CRUD for users, staff, offices, teams, accounts, campaigns
-- Access grant management (resource-scoped, role-based)
+- Access grant management (per-resource access to GUB-owned org data)
 - Access request review workflow
-- App registration and permission management
-- OAuth client management
+- OAuth Agent Client management (`/settings/oauth-clients`)
+- Trusted apps registry (`/settings/trusted-apps` — origins + Google client_ids that may obtain tokens)
 - Staff metadata editor (skills, interests, certifications)
 - Resourcing search interface
 - Data Sources dashboard — sync configuration, run history, and run details
@@ -128,10 +128,13 @@ access, gated by IAP at the network layer).
 │                   Auth Layer                         │
 │  users ─── refresh_tokens                            │
 │    │        oauth_auth_codes                         │
-│    │        user_app_permissions ── apps              │
-│    │        access_grants                            │
+│    │        access_grants ── (per-resource org access) │
 │    │        access_requests                          │
 │    └── staff (org identity)                          │
+│                                                     │
+│  apps  (thin appId → friendly-name registry; not a gate) │
+│  trusted_apps (origins + google_client_ids; trust  │
+│                registry for /auth/google/exchange) │
 │                                                     │
 │                   Org Layer                          │
 │  offices ── staff ── team_members ── teams           │

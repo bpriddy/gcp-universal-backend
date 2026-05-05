@@ -8,6 +8,121 @@ remaining exposures) lives in internal notes instead of this public log.
 
 ## [Unreleased]
 
+### SDK error handling — typed exchange errors + classified middleware errors (2026-05-04)
+
+Surfaced during a debugging session with the work-flows implementer:
+the SDK was flattening rich error responses from GUB into bare
+`Error(message)` instances, forcing consumers to string-match error
+text. Fixed.
+
+- `sdk/frontend` exports `GUBExchangeError` with `code`, `message`,
+  `status`, `details` preserved verbatim from GUB's response.
+  Consumers can `instanceof GUBExchangeError` and switch on `err.code`
+  to route different failure modes to different UI (admin contact,
+  user retry, generic toast).
+- `sdk/backend`'s `gub.middleware()` no longer flattens every
+  verification failure to `INVALID_TOKEN`. New `classifyVerifyError`
+  maps `jose`'s typed errors to specific codes:
+  `TOKEN_EXPIRED` / `CLAIM_INVALID` / `SIGNATURE_INVALID` /
+  `KEY_NOT_FOUND` / `JWKS_FETCH_TIMEOUT` / `TOKEN_MALFORMED` /
+  `JOSE_<code>` / `INVALID_TOKEN` (catch-all for backward compat).
+- `sdk/USAGE.md` — new "Quick start: 5 steps" section near the top
+  documents the operational onboarding (register trusted_apps → set
+  env vars → pick appId → wire SDK → test login) in order, plus a
+  middleware-error-codes table and a typed-error handling example.
+  Explicit guidance to keep `gub.config.ts` in shared code so
+  frontend/backend can't drift on the appId literal.
+
+### App-level access gating removed root-and-stem (2026-05-04)
+
+Centralizing per-user, per-app authorization at the IdP layer was an
+anti-pattern. It duplicated what the JWT audience claim already does
+cryptographically, centralized decisions that belong at each consuming
+app, and the `autoAccess=true` escape hatch was already a tell. After
+discussion, removed the entire surface.
+
+- Migration 20260504000000 drops `user_app_permissions`,
+  `app_access_requests`, and the `auto_access` + `is_active` columns
+  from `apps`. The `apps` table itself is preserved as a thin
+  appId → friendly-name registry.
+- `checkOrProvisionAppAccess`, `pending_approval` branch, and
+  `PendingApprovalResponse` removed from auth flow. JWT no longer
+  carries a `permissions[]` claim.
+- SDK: `GUBPendingApprovalError` (a hotfix from earlier in the day),
+  `requireRole` middleware, `appPermission` field on
+  `GUBRequestContext`, and `permissions[]` on `GUBUser` all removed.
+- gub-admin: `/apps` page + `/api/apps`, `/app-access-requests` page
+  + `/api/app-access-requests` removed. Nav cleaned up. The
+  `/users/[id]` detail page no longer tries to render permissions.
+- Pre-existing JWT audience bug fixed as part of this work:
+  `signAccessToken` now accepts `{ appId }` and signs with
+  `aud = [appId, JWT_AUDIENCE]` (multi-audience). Without this fix,
+  the SDK config simplification's `aud === appId` verifier check
+  was unreachable — GUB always signed with `JWT_AUDIENCE` only.
+- New decision doc at `docs/proposals/remove-app-access-gating.md`
+  with the architectural reasoning. Implementer-facing migration
+  notice at `docs/proposals/implementer-heads-up-2026-05-04.md`.
+
+Net change: -341 lines on GUB, -710 lines on gub-admin.
+
+### Trusted apps registry (2026-04-30)
+
+Consolidates the previous CORS allow-list and the previous Google
+audience allow-list into a single registry, with strict same-row
+pairing of origin and Google client_id. A fork or derivative
+environment cannot inherit a parent app's trust at any layer.
+
+- Migration 20260430040000 creates `trusted_apps` (`id`, `name`,
+  `origins TEXT[]`, `google_client_ids TEXT[]`, `is_active`,
+  `added_by`, `created_at`, `updated_at`) with GIN indexes on
+  the array columns. Folds existing `cors_allowed_origins` rows
+  into the new shape and drops the legacy table.
+- `originAllowList` middleware now reads `trusted_apps.origins[]`
+  for the coarse CORS gate. `verifyGoogleToken` reads
+  `trusted_apps.google_client_ids[]` for the cryptographic audience
+  check, then enforces strict same-row pairing on the verified
+  audience + the request's `Origin` header.
+- `ensureSelfTrustedApp` boot-time idempotent seed inserts a
+  "GUB itself" row holding the env `GOOGLE_CLIENT_ID` so the OAuth
+  broker's self-issued tokens still verify after migration. Also
+  normalizes whitespace in array values defensively (catches a
+  Secret Manager trailing-newline bug we hit during deploy).
+- `verifyGoogleToken` returns structured error codes:
+  `AUDIENCE_NOT_REGISTERED`, `AUDIENCE_ORIGIN_MISMATCH`,
+  `AUDIENCES_REGISTRY_EMPTY`, `EMAIL_NOT_VERIFIED`,
+  `INVALID_GOOGLE_TOKEN`. `errorHandler` returns 403 (operator
+  action required) for the registration-related codes; 401 for
+  recoverable token failures.
+- gub-admin → Settings → Trusted apps surfaces CRUD. Old
+  `/settings/cors-origins` redirects in. Audit log gets every add /
+  edit / deactivate / delete via `requireActor`.
+
+### SDK configuration simplification — `defineGUBConfig` helper (2026-04-30)
+
+Implementer-side env-var sprawl was an anti-pattern. Six env vars,
+three of them carrying the same string, audience and issuer that
+should come from a discovery doc. Collapsed.
+
+- New `sdk/config.ts` exports `defineGUBConfig({ url, googleClientId, appId })`.
+  Validates input synchronously, lazily fetches and validates
+  `${url}/.well-known/oauth-authorization-server`, exposes typed
+  accessors for `issuer`, `jwksUri`, etc.
+- Both `sdk/backend/createGUBClient` and `sdk/frontend/<GUBProvider>`
+  consume the same `GUBConfig` object. Implementers declare config
+  once in a shared file.
+- `appId` becomes a code constant instead of an env var (identity,
+  not config). Audience verification on the consumer side pins to
+  `aud === gub.appId`, decided per security team.
+- Discovery-doc fetch enforces `discovery.issuer === url` (single
+  trust anchor; loud failure on typo). HTTPS-only except loopback.
+  In-memory cache only (per security review — tampered on-disk cache
+  would become the trust anchor).
+- Backward-compat: legacy `{ gubUrl, issuer, audience }` and
+  `{ gubUrl, googleClientId }` shapes still accepted with one-time
+  `console.warn` at construction. Will be removed in a future major.
+- Decision doc at `docs/proposals/sdk-config-simplification.md` with
+  the security review's responses to the original 6 asks.
+
 ### CORS allow-list — DB-backed, admin-controllable (2026-04-30)
 
 Reviewer feedback: requiring a redeploy per origin registration was too
